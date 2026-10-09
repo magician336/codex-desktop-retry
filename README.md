@@ -33,6 +33,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\codex-desktop-retry.ps1
 ```
 
+### 本地 Web 控制台
+
+如果需要可视化操作，运行本地控制台：
+
+```powershell
+.\codex-desktop-retry-ui.ps1
+```
+
+它会在 `http://127.0.0.1:8765/` 打开苹果风格的毛玻璃页面。控制台可以启动、暂停和恢复监控器，展示总计及每个会话的容量错误、成功、失败和失败原因，并在会话详情中查看事件时间线。页面通过本机 PowerShell API 工作，不上传 rollout 内容。
+
+“设置”页可以配置日志目录、冷却时间、最大重试次数等参数，并通过当前用户任务计划设置登录自启动。暂停只暂停监控检测和自动重试，保留监控进程与历史数据；保存设置会重启监控器以确保参数一致。
+
+统计来自 `retry-state.json` 及其轮转副本，页面会显示这一保留历史边界。控制台运行时生成的 `retry-control.json` 和 `retry-ui-settings.json` 不纳入版本控制。
+
 如果日志不在默认目录，可以显式传入一个或多个现有目录：
 
 ```powershell

@@ -1,5 +1,7 @@
 retry-state.json
 retry-state.json.*
+retry-control.json
+retry-ui-settings.json
 releases/**/retry-state.json*
 retry-progress.json
 ui-controls.log

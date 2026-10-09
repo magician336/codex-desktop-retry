@@ -14,7 +14,8 @@ param(
     [int] $StateMaxFiles = 3,
     [switch] $AllowNativeClick,
     [string] $StatePath = (Join-Path $PSScriptRoot 'retry-state.json'),
-    [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log')
+    [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log'),
+    [string] $ControlPath = (Join-Path $PSScriptRoot 'retry-control.json')
 )
 
 Set-StrictMode -Version Latest
@@ -43,16 +44,31 @@ $options = @{
     UiLeaseSeconds = $UiLeaseSeconds; RescanSeconds = $RescanSeconds
     StateMaxBytes = $StateMaxBytes; StateMaxFiles = $StateMaxFiles
     AllowNativeClick = $AllowNativeClick.IsPresent; StatePath = $StatePath
-    UiDiagnosticPath = $UiDiagnosticPath
+    UiDiagnosticPath = $UiDiagnosticPath; ControlPath = $ControlPath
 }
 $monitor = New-RetryMonitor $options
 $adapter = New-DesktopRetryAdapter $monitor
 Write-Host 'Codex Desktop retry monitor started. Press Ctrl+C to stop.' -ForegroundColor Cyan
 Write-Host "Watching: $($LogRoot -join ', ')" -ForegroundColor DarkCyan
 Write-RetryState $monitor 'started'
+$wasPaused = $false
 try {
     while ($true) {
-        Invoke-RetryMonitorTick $monitor $adapter (Get-Date)
+        $paused = $false
+        if ($ControlPath -and (Test-Path -LiteralPath $ControlPath -PathType Leaf)) {
+            try {
+                $control = Get-Content -LiteralPath $ControlPath -Raw | ConvertFrom-Json
+                $paused = [bool]$control.paused
+            } catch { $paused = $false }
+        }
+        if ($paused) {
+            if (-not $wasPaused) { Write-RetryState $monitor 'paused' $ControlPath }
+            $wasPaused = $true
+        } else {
+            if ($wasPaused) { Write-RetryState $monitor 'resumed' $ControlPath }
+            $wasPaused = $false
+            Invoke-RetryMonitorTick $monitor $adapter (Get-Date)
+        }
         Start-Sleep -Milliseconds ([Math]::Max(50, [int]($PollSeconds * 1000)))
     }
 } finally { $monitor.StateMutex.Dispose() }

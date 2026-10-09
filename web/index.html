@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0a0e18" />
+  <title>Retry Console · Codex Desktop</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <div class="shell">
+    <aside class="sidebar glass">
+      <div class="brand"><div class="brand-mark">↻</div><div><strong>Retry Console</strong><span>Codex Desktop</span></div></div>
+      <nav>
+        <button class="nav-item active" data-view="overview"><span>⌂</span>概览</button>
+        <button class="nav-item" data-view="sessions"><span>◉</span>会话</button>
+        <button class="nav-item" data-view="activity"><span>≋</span>活动记录</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span>设置</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="health"><i></i><div><span>本机服务</span><strong id="serviceText">正在连接</strong></div></div>
+        <button class="theme-button" id="themeToggle">◐ <span>切换外观</span></button>
+      </div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">LOCAL OPERATOR CONSOLE</p><h1 id="pageTitle">监控概览</h1></div>
+        <div class="top-actions"><span class="last-sync" id="lastSync">等待同步</span><button class="icon-button" id="refreshButton" aria-label="刷新">↻</button><button class="avatar">R</button></div>
+      </header>
+      <section class="view" id="view-overview">
+        <div class="hero glass">
+          <div><span class="badge" id="monitorBadge"><i></i>监控器已停止</span><h2>让每一个容量错误<br/><em>都有可靠的下一步。</em></h2><p>自动监听 Codex Desktop 会话，在需要时安全重试，并把每一次结果留在本机。</p></div>
+          <div class="hero-controls"><button class="primary-button" id="mainControl">启动监控</button><button class="secondary-button" id="heroSettings">打开设置</button></div>
+        </div>
+        <div class="metric-grid">
+          <article class="metric glass"><div class="metric-icon blue">◉</div><div><span>监听会话</span><strong id="metricSessions">0</strong><small>当前保留历史中</small></div></article>
+          <article class="metric glass"><div class="metric-icon amber">!</div><div><span>容量错误</span><strong id="metricErrors">0</strong><small>累计检测</small></div></article>
+          <article class="metric glass"><div class="metric-icon green">✓</div><div><span>重试成功</span><strong id="metricSuccesses">0</strong><small id="successRate">成功率 —</small></div></article>
+          <article class="metric glass"><div class="metric-icon red">×</div><div><span>重试失败</span><strong id="metricFailures">0</strong><small>含超时与上限</small></div></article>
+        </div>
+        <div class="content-grid">
+          <section class="panel glass"><div class="panel-heading"><div><span class="eyebrow">SESSION PULSE</span><h3>会话状态</h3></div><button class="text-button" data-view-link="sessions">查看全部 →</button></div><div class="session-list" id="overviewSessions"><div class="empty">还没有可展示的会话</div></div></section>
+          <section class="panel glass"><div class="panel-heading"><div><span class="eyebrow">LATEST EVENTS</span><h3>最近活动</h3></div><button class="text-button" data-view-link="activity">完整记录 →</button></div><div class="event-list" id="overviewEvents"><div class="empty">等待监控器写入事件</div></div></section>
+        </div>
+        <div class="history-note glass"><span class="note-icon">i</span><div><strong>统计边界</strong><p id="historyNote">数据来自当前状态文件及其轮转副本。启动监控器后会自动更新。</p></div><span class="live-dot">LIVE</span></div>
+      </section>
+      <section class="view hidden" id="view-sessions"><div class="view-heading"><div><span class="eyebrow">CONVERSATIONS</span><h2>监听中的会话</h2><p>每个会话独立计数，点击查看完整重试轨迹。</p></div><div class="filter-pills"><button class="filter active">全部</button><button class="filter">有失败</button><button class="filter">最近活跃</button></div></div><div class="session-table glass"><div class="table-head"><span>会话</span><span>容量错误</span><span>成功 / 失败</span><span>最近状态</span><span>最后活动</span></div><div id="sessionRows"><div class="empty">暂无会话</div></div></div></section>
+      <section class="view hidden" id="view-activity"><div class="view-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>活动记录</h2><p>保留日志中的事件按时间倒序排列。</p></div></div><div class="activity-table glass" id="activityRows"><div class="empty">暂无活动</div></div></section>
+      <section class="view hidden" id="view-settings"><div class="view-heading"><div><span class="eyebrow">CONTROL CENTER</span><h2>设置</h2><p>配置监控行为、开机启动和本地运行偏好。</p></div><button class="primary-button" id="saveSettings">保存并重启</button></div><div class="settings-layout"><div class="settings-card glass"><h3>启动与自启动</h3><label class="setting-row"><span><strong>登录时自动启动控制台</strong><small>使用当前用户任务计划，不需要管理员权限</small></span><input type="checkbox" class="switch" id="autostartToggle" /></label><label class="setting-row"><span><strong>允许原生鼠标回退</strong><small>仅在 UI Automation 无法点击时使用前台桌面输入</small></span><input type="checkbox" class="switch" id="nativeClick" /></label></div><div class="settings-card glass"><h3>常用参数</h3><label>日志目录<input class="field" id="logRoot" /></label><div class="two-fields"><label>冷却时间（秒）<input class="field" type="number" id="cooldownSeconds" min="0" /></label><label>最大重试次数<input class="field" type="number" id="maxRetries" min="0" /></label></div><div class="two-fields"><label>确认超时（秒）<input class="field" type="number" id="retryConfirmSeconds" min="1" /></label><label>UI 等待（秒）<input class="field" type="number" id="retryUiWaitSeconds" min="1" /></label></div></div><details class="settings-card glass"><summary>高级参数</summary><div class="two-fields"><label>轮询间隔（秒）<input class="field" type="number" step="0.05" id="pollSeconds" min="0.05" /></label><label>重扫间隔（秒）<input class="field" type="number" id="rescanSeconds" min="10" /></label></div><div class="two-fields"><label>UI 租约（秒）<input class="field" type="number" id="uiLeaseSeconds" min="1" /></label><label>退避序列<input class="field" id="backoffSeconds" placeholder="0,30,60" /></label></div><label>进程名（逗号分隔）<input class="field" id="processName" /></label></details></div></section>
+    </main>
+  </div>
+  <div class="drawer-backdrop hidden" id="drawerBackdrop"><aside class="drawer glass"><button class="drawer-close" id="drawerClose">×</button><div id="drawerContent"></div></aside></div>
+  <script src="/app.js"></script>
+</body>
+</html>
