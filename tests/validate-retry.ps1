@@ -13,6 +13,7 @@ try {
     $rollout = Join-Path $temp 'rollout-session-a.jsonl'
     $state = Join-Path $temp 'state.jsonl'
     $diag = Join-Path $temp 'diag.log'
+    $index = Join-Path $temp 'session_index.jsonl'
     $options = @{
         LogRoot = @($temp); ProcessName = @('ChatGPT'); MaxRetries = 2; BackoffSeconds = @(0)
         CooldownSeconds = 20; RetryUiWaitSeconds = 1; RetryConfirmSeconds = 10
@@ -23,8 +24,10 @@ try {
     $monitor = New-RetryMonitor $options
     $meta = '{"type":"session_meta","payload":{"session_id":"session-a","id":"session-a"}}'
     [IO.File]::WriteAllText($rollout, $meta + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($index, '{"id":"session-a","thread_name":"审查 T01 Selected model is at capacity"}' + "`n", [Text.UTF8Encoding]::new($false))
     Update-RetryLogCache $monitor (Get-Date) -Force
     Assert ($monitor.Files.Count -eq 1) 'Expected one cached rollout.'
+    Assert (-not (Test-RetryRolloutPath $monitor $index)) 'Session index must not be treated as a retryable rollout.'
     $newRollout = Join-Path $temp 'rollout-session-b.jsonl'
     [IO.File]::WriteAllText($newRollout, $meta.Replace('session-a', 'session-b') + "`n", [Text.UTF8Encoding]::new($false))
     Start-Sleep -Milliseconds 300

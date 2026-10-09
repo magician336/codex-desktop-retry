@@ -8,8 +8,8 @@
 
 ## 功能
 
-- 监控 `$HOME\.codex` 下的 rollout 和日志文件，默认不递归扫描整个
-  `%LOCALAPPDATA%\Packages`。
+- 监控 `$HOME\.codex` 下名称符合 `rollout-*.jsonl` 的 rollout 文件，默认不递归扫描整个
+  `%LOCALAPPDATA%\Packages`；`session_index.jsonl` 等索引和诊断文件不会触发重试。
 - 使用 `FileSystemWatcher` 发现新增和变更文件，并按 `-RescanSeconds` 做低频兜底重扫。
 - 按 `session_id` 隔离冷却时间、退避序列、重试次数和待处理队列，多会话之间不会共享计数。
 - 只在触发错误的同一个 rollout 中确认恢复；确认需要匹配的 turn 输出或完成事件。

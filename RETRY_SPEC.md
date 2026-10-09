@@ -22,6 +22,7 @@
 ## Implementation Decisions
 
 - Use a shared log-file cache fed by `FileSystemWatcher`; perform a bounded recursive reconciliation only at startup and at a configurable low-frequency fallback interval. Confirmation filters cached files and never performs a recursive scan on every poll.
+- Treat only `rollout-*.jsonl` files as retryable event streams; ignore `session_index.jsonl`, sandbox logs, and other JSONL files that may contain capacity text without turn-scoped retry events.
 - Replace global retry counters with a dictionary keyed by session id, falling back to the source path only when a session id is unavailable.
 - Carry source file, source offset, session id, and turn id from the capacity event into confirmation.
 - Accept confirmation only for the triggering rollout after the click boundary. A matching turn may confirm with explicit output/completion events; when Codex creates a fresh turn without `parent_turn_id`, the first post-click turn start is only a candidate. That candidate must emit `turn_context` and then its own assistant output/completion before confirmation. Generic activity from before the click, a parallel turn, or another rollout is insufficient.

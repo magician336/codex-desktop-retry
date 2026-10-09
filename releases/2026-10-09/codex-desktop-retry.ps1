@@ -89,7 +89,11 @@ function New-RolloutCursor([string] $Path, [bool] $Baseline, $Monitor = $null) {
 function Test-RetryRolloutPath($Monitor, [string] $Path) {
     if (-not $Path -or [IO.Directory]::Exists($Path)) { return $false }
     $full = [IO.Path]::GetFullPath($Path)
-    if ([IO.Path]::GetExtension($full) -notin @('.jsonl', '.log')) { return $false }
+    # LogRoot also contains session_index.jsonl, sandbox logs, and other JSONL
+    # files that may mention capacity in a title or diagnostic. Only rollout
+    # streams carry turn-scoped events that can safely trigger a retry.
+    if ([IO.Path]::GetExtension($full) -ne '.jsonl' -or
+        [IO.Path]::GetFileName($full) -notlike 'rollout-*.jsonl') { return $false }
     return $full -ne [IO.Path]::GetFullPath($Monitor.Options.StatePath) -and
         $full -ne [IO.Path]::GetFullPath($Monitor.Options.UiDiagnosticPath)
 }
