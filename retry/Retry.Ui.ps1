@@ -51,7 +51,7 @@ function Test-UiSessionMatch($Node, $Hint, $Monitor) {
 function Find-SessionTarget($Snapshot, $Hint, $Monitor, [bool] $SearchResults = $false) {
     $matches = @($Snapshot | Where-Object {
         $_.Visible -and $_.Enabled -and $_.Type -in @('Button', 'Hyperlink', 'ListItem') -and
-        (($_.Sidebar -and -not $SearchResults) -or ($SearchResults -and -not $_.Sidebar)) -and
+        (($_.Sidebar -and -not $SearchResults) -or ($SearchResults -and (-not $_.Sidebar -or $_.SearchRegion))) -and
         (Test-UiSessionMatch $_ $Hint $Monitor)
     })
     if ($matches.Count -gt 1) {
@@ -105,6 +105,58 @@ function Set-UiSearchValue($Node, [string] $Text, $Monitor) {
     } catch { Write-RetryDiagnostic $Monitor 'search-value' $Node.Name $_.Exception; throw }
 }
 
+function Invoke-UiScrollForRetry($Snapshot, $Monitor) {
+    # Retry controls are often below the fold in the conversation document. Use
+    # UI Automation's scroll container so the scroll stays scoped to this page.
+    $seeds = @($Snapshot | Where-Object {
+        $_.Visible -and -not $_.Sidebar -and -not $_.SearchRegion -and
+        $_.Type -in @('Document', 'Pane', 'Group', 'Custom', 'Edit', 'Text')
+    } | Sort-Object @{ Expression = {
+        switch ($_.Type) {
+            'Document' { 0; break }
+            'Pane' { 1; break }
+            'Group' { 2; break }
+            default { 3 }
+        }
+    }})
+
+    foreach ($seed in $seeds) {
+        $element = $seed.Element
+        for ($depth = 0; $depth -lt 20 -and $element; $depth++) {
+            try {
+                $current = $element.Current
+                if ($current.ClassName -match 'sidebar-item|sidebar-row|folder-row|app-shell-left-panel') { break }
+                $controlType = $current.ControlType.ProgrammaticName.Replace('ControlType.', '')
+                if ($controlType -in @('Document', 'Pane', 'Group', 'Custom')) {
+                    try {
+                        $scroll = [Windows.Automation.ScrollPattern]$element.GetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern)
+                        $vertical = [double]$scroll.Current.VerticalScrollPercent
+                        if ($vertical -ge 100) {
+                            $element = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element)
+                            continue
+                        }
+                        if ($vertical -ge 0) {
+                            $horizontal = [double]$scroll.Current.HorizontalScrollPercent
+                            if ($horizontal -lt 0) { $horizontal = 0 }
+                            $scroll.SetScrollPercent($horizontal, [Math]::Min(100, $vertical + 80))
+                        } else {
+                            $scroll.Scroll([Windows.Automation.ScrollAmount]::NoAmount, [Windows.Automation.ScrollAmount]::LargeIncrement)
+                        }
+                        return $true
+                    } catch {
+                        # This ancestor is not the scroll owner; keep walking.
+                    }
+                }
+                $element = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($element)
+            } catch {
+                Write-RetryDiagnostic $Monitor 'retry-scroll' $seed.Name $_.Exception
+                break
+            }
+        }
+    }
+    return $false
+}
+
 function Ensure-RetryNativeMouse {
     if ('RetryNativeMouse' -as [type]) { return }
     Add-Type @"
@@ -156,7 +208,12 @@ function Invoke-VerifiedRetryControl($Snapshot, $Window, $Monitor) {
         }
     }
     if ($candidates.Count -gt 1) { throw 'Multiple retry controls are visible; cannot choose the failed turn safely.' }
-    if ($candidates.Count -eq 0) { return $false }
+    if ($candidates.Count -eq 0) {
+        # The control may be below the current viewport. Scroll one page and let
+        # the next monitor tick take a fresh snapshot before attempting a click.
+        [void](Invoke-UiScrollForRetry $content $Monitor)
+        return $false
+    }
     $node = $candidates[0]
     if (Invoke-UiNode $node $Monitor 'retry-actuator') { return $true }
     if ($Monitor.Options.AllowNativeClick) {

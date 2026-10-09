@@ -85,6 +85,13 @@ UI 更新导致找不到会话或 Retry 控件时，脚本会写入 `ui-controls
 `retry-failed`，不会为了恢复任务而结束进程或点击未经确认的会话。可以先运行下面的只读检查
 查看当前 UI Automation 树：
 
+如果 Retry 控件在错误页底部、当前不在视口内，脚本会沿已验证会话的内容区域调用 Windows
+UI Automation 的 `ScrollPattern`，每次向下滚动一个较大的步长，然后重新抓取 UI 树。只有控件
+进入视口、名称匹配且处于启用状态后才会点击；找不到可滚动容器时则继续按 UI 租约和冷却策略等待。
+
+如果侧边栏没有显示对应会话，脚本会打开 Search/搜索，优先用会话标题、没有标题时用
+`session_id` 查询结果；选中结果后还会再次验证当前页面的会话标识，确认无误才继续寻找 Retry。
+
 ```powershell
 .\tests\check-desktop.ps1
 ```

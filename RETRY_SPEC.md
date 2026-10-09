@@ -29,6 +29,8 @@
 - Separate session target resolution, navigation validation, and retry control invocation behind PowerShell functions.
 - Compile the native mouse helper once and use UI Automation first; native click remains a diagnosed fallback because it requires foreground desktop input.
 - Validate search text through ValuePattern and validate the selected result and post-navigation UI against the session hint.
+- Allow a verified conversation content container to scroll through the UI Automation ScrollPattern when the retry control is below the viewport; never scroll the sidebar or search dialog.
+- Accept a search result exposed inside the search region even when Electron also marks it as a sidebar descendant, then revalidate the active conversation before acting.
 - Write JSONL state records through a named mutex and rotate the active file when it exceeds a configurable byte limit.
 - Keep all sessions in the cache instead of truncating the list to a fixed number of recent files.
 

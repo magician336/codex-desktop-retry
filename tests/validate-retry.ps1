@@ -63,8 +63,12 @@ try {
     $duplicateB = [pscustomobject]@{ Element = $null; Name = 'Target'; Id = ''; Class = 'row'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $true; SearchRegion = $false }
     $duplicateHint = [pscustomobject]@{ SessionId = ''; Title = 'Target' }
     Assert ((Find-SessionTarget @($duplicateA, $duplicateB) $duplicateHint $monitor).Name -eq 'Target') 'Equivalent UI aliases were treated as ambiguous.'
+    $searchResult = [pscustomobject]@{ Element = $null; Name = 'Target'; Id = ''; Class = 'search-result'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $true; SearchRegion = $true }
+    Assert ((Find-SessionTarget @($searchResult) $duplicateHint $monitor $true).Name -eq 'Target') 'Search-region result was not accepted when sidebar matching failed.'
     $uiText = Get-Content -Raw (Join-Path $repo 'retry\Retry.Ui.ps1')
     Assert ($uiText -notmatch '::LegacyIAccessiblePattern') 'Unsupported LegacyIAccessiblePattern type reference remains.'
+    Assert ($uiText -match 'ScrollPattern') 'Retry UI does not expose scroll-container handling.'
+    Assert ($uiText -match 'Invoke-UiScrollForRetry') 'Retry UI does not scroll when the control is below the viewport.'
     $adapter = [pscustomobject]@{}
     Add-Member -InputObject $adapter -MemberType ScriptMethod -Name Step -Value { param($Request, [datetime] $Now) 'Clicked' }
     $monitor2 = New-RetryMonitor $options
