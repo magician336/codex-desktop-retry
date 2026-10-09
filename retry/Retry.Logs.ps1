@@ -12,7 +12,17 @@ function Get-RetryEvent($Json) {
     $data = if ($outer -in @('event_msg', 'session_meta', 'turn_context', 'response_item')) { $payload } else { $Json }
     $kind = if ($outer -in @('event_msg', 'response_item')) { [string](Get-RetryField $data 'type') } else { $outer }
     $session = [string](Get-RetryField $data 'session_id')
-    if (-not $session -and $outer -eq 'session_meta') { $session = [string](Get-RetryField $data 'id') }
+    $isSubagent = $false
+    if ($outer -eq 'session_meta') {
+        # Forked rollouts put the parent thread in session_id and their own
+        # thread id in id. The child id is the only safe UI target.
+        $id = [string](Get-RetryField $data 'id')
+        $source = Get-RetryField $data 'source' $null
+        $isSubagent = [bool]((Get-RetryField $data 'forked_from_id') -or
+            (Get-RetryField $data 'thread_source') -eq 'subagent' -or
+            (Get-RetryField $source 'subagent'))
+        if ($id) { $session = $id }
+    }
     $turn = [string](Get-RetryField $data 'turn_id')
     $parent = [string](Get-RetryField $data 'retry_of_turn_id')
     if (-not $parent) { $parent = [string](Get-RetryField $data 'retried_turn_id') }
@@ -21,13 +31,13 @@ function Get-RetryEvent($Json) {
         $metadata = Get-RetryField $data 'internal_chat_message_metadata_passthrough' $null
         $turn = [string](Get-RetryField $metadata 'turn_id')
     }
-    [pscustomobject]@{ Kind = $kind; Outer = $outer; Data = $data; SessionId = $session; TurnId = $turn; ParentTurnId = $parent; RootTurnId = $root }
+    [pscustomobject]@{ Kind = $kind; Outer = $outer; Data = $data; SessionId = $session; IsSubagent = $isSubagent; TurnId = $turn; ParentTurnId = $parent; RootTurnId = $root }
 }
 
 function New-RolloutCursor([string] $Path, [bool] $Baseline, $Monitor = $null) {
     $cursor = [pscustomobject]@{
         Path = $Path; Position = [int64]0; Partial = [byte[]]@(); SkipPartial = $false
-        SessionId = ''; TurnId = ''; ActiveTurns = @{}; Title = ''
+        SessionId = ''; IsSubagent = $false; TurnId = ''; ActiveTurns = @{}; Title = ''
     }
     # Only read metadata at startup; existing errors are deliberately not replayed.
     if ($Baseline) {
@@ -38,6 +48,7 @@ function New-RolloutCursor([string] $Path, [bool] $Baseline, $Monitor = $null) {
                 continue
             }
             if ($event.SessionId) { $cursor.SessionId = $event.SessionId }
+            if ($event.IsSubagent) { $cursor.IsSubagent = $true }
         }
         $stream = [IO.File]::Open($Path, 'Open', 'Read', 'ReadWrite')
         try {
@@ -209,13 +220,14 @@ function Resolve-RetrySession($Monitor, $Cursor, $Record) {
         if ($Monitor.Titles.ContainsKey($Cursor.SessionId)) { $title = $Monitor.Titles[$Cursor.SessionId] }
     }
     [pscustomobject]@{
-        SessionId = $Cursor.SessionId; TurnId = $turnId; Title = $title
+        SessionId = $Cursor.SessionId; IsSubagent = $Cursor.IsSubagent; TurnId = $turnId; Title = $title
         SourcePath = $Cursor.Path; ErrorOffset = $Record.EndOffset
     }
 }
 
 function Update-RolloutContext($Cursor, $Event) {
     if ($event.SessionId) { $Cursor.SessionId = $event.SessionId }
+    if ($event.IsSubagent) { $Cursor.IsSubagent = $true }
     if ($event.TurnId -and $event.Kind -in @('task_started', 'turn_started', 'turn_context')) {
         $Cursor.TurnId = $event.TurnId
         $Cursor.ActiveTurns[$event.TurnId] = $true

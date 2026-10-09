@@ -37,7 +37,12 @@ function Read-DesktopSnapshot($Window, $Monitor) {
 }
 
 function Test-UiSessionMatch($Node, $Hint, $Monitor) {
-    if ($Hint.SessionId -and ($Node.Name -eq $Hint.SessionId -or $Node.Id.Contains($Hint.SessionId))) { return $true }
+    if ($Hint.SessionId) {
+        if ($Node.Name -eq $Hint.SessionId -or ([string]$Node.Id).Contains($Hint.SessionId)) { return $true }
+        # A forked rollout may inherit its parent's title. Never navigate to
+        # that parent when the child session id is not exposed by the UI.
+        if (Get-RetryField $Hint 'IsSubagent' $false) { return $false }
+    }
     if (-not $Hint.Title -or -not $Node.Name) { return $false }
     $expected = [regex]::Replace([string]$Hint.Title, '\s+', ' ').Trim()
     $actual = [regex]::Replace([string]$Node.Name, '\s+', ' ').Trim()

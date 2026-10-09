@@ -26,6 +26,13 @@ function New-RetryRequest($Hint, [datetime] $Now) {
 }
 
 function Add-CapacityRequest($Monitor, $Hint, [datetime] $Now) {
+    if (Get-RetryField $Hint 'IsSubagent' $false) {
+        # Subagent rollouts are represented by hidden child threads. Their
+        # capacity failures must not make the visible parent conversation look
+        # retryable or take ownership of its UI.
+        Write-RetryState $Monitor 'capacity-subagent-ignored' $Hint.SourcePath ([string]$Hint.SessionId) @{ turn = $Hint.TurnId }
+        return
+    }
     $key = Get-RetrySessionKey $Hint
     $state = Get-RetrySessionState $Monitor $key
     if (-not $Hint.SessionId -or -not $Hint.TurnId) {

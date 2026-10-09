@@ -39,6 +39,11 @@ try {
     $hint = Resolve-RetrySession $monitor $monitor.Files[$rollout] $records[0]
     Assert ($hint.SessionId -eq 'session-a') 'Session id was not resolved.'
     Assert ($hint.TurnId -eq 'turn-a') 'Turn id was not resolved.'
+    $childMeta = '{"type":"session_meta","payload":{"session_id":"parent-session","id":"child-session","forked_from_id":"parent-session","thread_source":"subagent"}}' | ConvertFrom-Json
+    $childEvent = Get-RetryEvent $childMeta
+    Assert ($childEvent.SessionId -eq 'child-session' -and $childEvent.IsSubagent) 'Forked rollout was attributed to its parent session.'
+    Add-CapacityRequest $monitor ([pscustomobject]@{ SessionId = 'child-session'; IsSubagent = $true; TurnId = 'child-turn'; SourcePath = $rollout; ErrorOffset = 1; Title = 'Target' }) (Get-Date)
+    Assert (-not $monitor.Sessions.ContainsKey('child-session')) 'Subagent capacity error created a visible retry request.'
     Assert ((Test-CapacityText $records[0].Raw)) 'Capacity event was not classified.'
     $key = Get-RetrySessionKey $hint
     $stateObject = Get-RetrySessionState $monitor $key
@@ -64,6 +69,8 @@ try {
     Assert (Test-UiSessionMatch $uiNode $uiHint $monitor) 'Long UI title prefix was not matched.'
     $duplicateA = [pscustomobject]@{ Element = $null; Name = 'Target'; Id = ''; Class = 'row'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $true; SearchRegion = $false }
     $duplicateB = [pscustomobject]@{ Element = $null; Name = 'Target'; Id = ''; Class = 'row'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $true; SearchRegion = $false }
+    $childUiHint = [pscustomobject]@{ SessionId = 'child-session'; IsSubagent = $true; Title = 'Target' }
+    Assert (-not (Test-UiSessionMatch $duplicateA $childUiHint $monitor)) 'Forked session incorrectly fell back to the parent title.'
     $duplicateHint = [pscustomobject]@{ SessionId = ''; Title = 'Target' }
     Assert ((Find-SessionTarget @($duplicateA, $duplicateB) $duplicateHint $monitor).Name -eq 'Target') 'Equivalent UI aliases were treated as ambiguous.'
     $searchResult = [pscustomobject]@{ Element = $null; Name = 'Target'; Id = ''; Class = 'search-result'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $true; SearchRegion = $true }
