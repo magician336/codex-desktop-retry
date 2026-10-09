@@ -1,144 +1,168 @@
 # Codex Desktop 自动重试监控器
 
-一个面向 Windows 的 PowerShell 监控器：它读取 Codex Desktop 写入的 JSONL rollout
-日志，在检测到模型容量类错误时定位对应会话，并调用桌面中的 **Retry / Try again /
-重试** 控件。它不会结束 Codex 进程，也不会修改认证文件、模型或账户配置。
+Windows 上运行的 Codex Desktop 本地自动重试工具。它持续读取 Codex Desktop 写入的 rollout JSONL 日志，在识别到“模型容量不足”类错误后，定位原会话并调用已验证的 **Retry / Try again / 重试** 控件。
+
+推荐从本地 Web UI 启动：UI 负责启动和管理监控器，展示会话统计、事件时间线和失败原因；真正的日志解析、重试判断和 Windows UI Automation 仍由 PowerShell 监控器完成。所有数据默认只在本机处理，不上传 rollout 内容。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 功能
-
-- 监控 `$HOME\.codex` 下名称符合 `rollout-*.jsonl` 的 rollout 文件，默认不递归扫描整个
-  `%LOCALAPPDATA%\Packages`；`session_index.jsonl` 等索引和诊断文件不会触发重试。
-- 使用 `FileSystemWatcher` 发现新增和变更文件，并按 `-RescanSeconds` 做低频兜底重扫。
-- 按 `session_id` 隔离冷却时间、退避序列、重试次数和待处理队列，多会话之间不会共享计数。
-- 只在触发错误的同一个 rollout 中确认恢复；确认需要匹配的 turn 输出或完成事件。
-  Retry 创建没有 `parent_turn_id` 的新 turn 时，还必须观察到该 turn 的上下文和自身输出/完成事件。
-- 优先使用 Windows UI Automation；原生鼠标点击是需要前台桌面的显式回退，默认关闭。
-- 将运行状态和 UI 诊断写成有界 JSONL/日志文件，并使用命名互斥锁串行写入。
-
-## 要求
+## 适用环境
 
 - Windows 10/11
 - 已启动并登录的 Codex Desktop（或暴露兼容 UI 的 ChatGPT Desktop）
-- Windows PowerShell 或 PowerShell 7
-- 需要使用原生鼠标回退时，必须有可交互的前台桌面；锁屏和断开的远程桌面可能无法点击。
+- Windows PowerShell 5.1 或 PowerShell 7
+- 若启用“原生鼠标回退”，必须有可交互的前台桌面；锁屏或断开的远程桌面可能无法点击
 
-## 快速开始
+## 推荐启动方式：本地 Web UI
 
-先启动 Codex Desktop，再在本仓库目录运行：
+1. 启动并登录 Codex Desktop。
+2. 在本仓库目录打开 PowerShell，执行：
+
+   ```powershell
+   Set-ExecutionPolicy -Scope Process Bypass
+   .\codex-desktop-retry-ui.ps1
+   ```
+
+3. 脚本会监听 `http://127.0.0.1:8765/`、自动打开浏览器，并自动启动后台监控器。若浏览器没有自动打开，手动访问该地址即可。
+4. 在“监控概览”确认状态为“运行中”，再继续使用 Codex Desktop。需要停止时关闭控制台窗口；也可以在 UI 中暂停监控。
+
+控制台只绑定回环地址 `127.0.0.1`，默认不会暴露到局域网。端口被占用时可换端口：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass
+.\codex-desktop-retry-ui.ps1 -Port 8766
+```
+
+不希望自动打开浏览器时使用 `-NoBrowser`：
+
+```powershell
+.\codex-desktop-retry-ui.ps1 -NoBrowser
+```
+
+### UI 中可以做什么
+
+- **概览**：查看监控进程、容量错误、尝试次数、确认成功和失败总数。
+- **监听会话**：按 Codex 会话查看错误、尝试、成功、失败及最后事件。
+- **活动记录**：查看最近保留的状态事件。
+- **设置**：修改日志目录、冷却时间、确认超时、最大重试次数、退避序列和进程名。
+- **开机启动**：可选“登录时自动启动控制台”，使用当前用户的任务计划，不需要管理员权限。
+- **允许原生鼠标回退**：只应在 UI Automation 无法点击且确实有前台桌面时开启。
+
+保存设置会重启后台监控器，使新参数立即生效。暂停只暂停检测和自动重试，监控进程仍在运行，历史状态不会被清除；恢复后继续工作。
+
+## 工作原理
+
+```text
+Codex Desktop
+    │ 写入 rollout-*.jsonl
+    ▼
+日志监听与增量解析
+    │ 识别容量错误，按 session_id 建立独立状态
+    ▼
+会话定位与 UI Automation
+    │ 校验当前会话、查找可见且启用的 Retry 控件
+    ▼
+Retry / Try again
+    │ 等待同一 rollout 的明确恢复事件
+    ▼
+retry-confirmed / retry-unconfirmed / retry-failed
+    │
+本地状态 JSONL → Web UI 统计与时间线
+```
+
+实现分为四层：
+
+1. **日志层**使用 `FileSystemWatcher` 监听新增和变更文件，并按增量偏移读取 JSONL；同时按 `-RescanSeconds` 做低频兜底扫描。只处理 `rollout-*.jsonl`，不会把 `session_index.jsonl` 当作重试事件。
+2. **状态机**以 `session_id` 隔离冷却时间、退避序列、重试次数和待确认请求。一个会话的重试额度不会被另一个会话消耗。启动时已存在的历史错误会被跳过，避免首次运行重放旧事件。
+3. **UI 层**优先使用 Windows UI Automation。它会验证会话标识、必要时搜索会话、滚动内容区域，再检查 Retry 控件名称、可见性和启用状态。只有找到目标会话中的控件才会点击；原生鼠标是显式开启的最后回退。
+4. **确认层**点击后不会立即算成功。监控器必须在触发错误的 rollout 中看到匹配 turn 的输出或完成事件；若 Retry 创建了没有 `parent_turn_id` 的新 turn，还要先看到该 turn 的上下文，再看到它自己的输出或完成事件。超时记录为 `retry-unconfirmed`。
+
+状态和 UI 诊断默认写入仓库目录：`retry-state.json`（含轮转副本）和 `ui-controls.log`。控制台使用这些保留文件生成统计，因此 UI 展示的是“当前文件及轮转副本”范围内的历史，不是永久数据库。
+
+## 日常使用与参数
+
+大多数用户只需使用 UI 设置页。需要脚本化或调试时，可直接运行监控器：
+
+```powershell
 .\codex-desktop-retry.ps1
 ```
 
-### 本地 Web 控制台
+常用参数：
 
-如果需要可视化操作，运行本地控制台：
-
-```powershell
-.\codex-desktop-retry-ui.ps1
-```
-
-它会在 `http://127.0.0.1:8765/` 打开苹果风格的毛玻璃页面。控制台可以启动、暂停和恢复监控器，展示总计及每个会话的容量错误、成功、失败和失败原因，并在会话详情中查看事件时间线。页面通过本机 PowerShell API 工作，不上传 rollout 内容。
-
-“设置”页可以配置日志目录、冷却时间、最大重试次数等参数，并通过当前用户任务计划设置登录自启动。暂停只暂停监控检测和自动重试，保留监控进程与历史数据；保存设置会重启监控器以确保参数一致。
-
-统计来自 `retry-state.json` 及其轮转副本，页面会显示这一保留历史边界。控制台运行时生成的 `retry-control.json` 和 `retry-ui-settings.json` 不纳入版本控制。
-
-如果日志不在默认目录，可以显式传入一个或多个现有目录：
-
-```powershell
-.\codex-desktop-retry.ps1 `
-  -LogRoot "$env:USERPROFILE\.codex", "$env:LOCALAPPDATA\Packages"
-```
-
-仓库还保留了一个可先使用的冻结版。它由 `scripts\build-stable.ps1` 从根目录启动器和
-`retry\` 模块生成；后续开发默认修改根目录版本：
-
-```powershell
-.\releases\2026-10-09\codex-desktop-retry.ps1
-```
-
-## 常用参数
-
-| 参数 | 默认值 | 用途 |
+| 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-LogRoot` | `$HOME\.codex` | rollout/log 文件目录，可重复传入 |
-| `-ProcessName` | `ChatGPT`, `Codex`, `OpenAI.Codex` | 要查找的桌面进程名 |
-| `-BackoffSeconds` | `0` | 重试退避序列，例如 `30,60,120` |
-| `-MaxRetries` | `0` | 每个会话的上限；`0` 表示不限制 |
+| `-LogRoot` | `$HOME\.codex` | rollout/log 目录，可重复传入 |
+| `-ProcessName` | `ChatGPT,Codex,OpenAI.Codex` | 要查找的桌面进程名 |
+| `-MaxRetries` | `0` | 每个会话的最大重试次数；`0` 表示不限制 |
+| `-BackoffSeconds` | `0` | 退避序列，例如 `30,60,120` |
 | `-CooldownSeconds` | `20` | 同一会话两次尝试之间的冷却时间 |
-| `-RetryConfirmSeconds` | `30` | 等待关联 turn 恢复事件的时间 |
-| `-UiLeaseSeconds` | `5` | 多会话共享桌面 UI 时单次租约时长 |
-| `-RescanSeconds` | `60` | 文件监听之外的低频兜底重扫间隔，至少 10 秒 |
-| `-StateMaxBytes` / `-StateMaxFiles` | `1 MiB` / `3` | 状态文件大小和轮转备份数 |
-| `-AllowNativeClick` | 关闭 | 允许前台桌面原生鼠标回退 |
-| `-StatePath` / `-UiDiagnosticPath` | 当前目录下的文件 | 状态和 UI 诊断输出位置 |
+| `-RetryUiWaitSeconds` | `90` | 等待 UI 控件出现的时间 |
+| `-RetryConfirmSeconds` | `30` | 等待恢复事件的时间 |
+| `-UiLeaseSeconds` | `5` | 多会话共享桌面 UI 时的单次租约 |
+| `-RescanSeconds` | `60` | 兜底重扫间隔，至少 10 秒 |
+| `-AllowNativeClick` | 关闭 | 允许前台桌面鼠标回退 |
 
-例如，设置退避并允许原生点击：
+例如，指定日志目录并设置退避：
 
 ```powershell
 .\codex-desktop-retry.ps1 `
+  -LogRoot "$env:USERPROFILE\.codex", "$env:LOCALAPPDATA\Packages" `
   -BackoffSeconds 30,60,120 `
-  -AllowNativeClick
+  -MaxRetries 5
 ```
 
-## 工作方式和限制
+仓库中的 `releases\2026-10-09\codex-desktop-retry.ps1` 是由 `scripts\build-stable.ps1` 生成的冻结版。日常开发和修复请使用根目录启动器；冻结版用于需要固定脚本内容的场景。
 
-脚本启动时会把已存在文件的当前位置记为起点，因此启动前已经写入的容量错误会被跳过，
-避免首次运行时重放历史事件。目前没有回放旧事件的开关。
+## 注意事项与排查
 
-点击 Retry 后不会立即记录成功。监控器会在触发错误的 rollout 中等待原 turn 的明确输出或
-完成事件；如果桌面创建了新 turn，则先记录为候选，只有同一候选 turn 随后出现
-`turn_context` 以及自己的输出/完成事件才会确认恢复。其他 rollout、并行 turn 或普通的
-无关 assistant 输出不会确认成功。超时会写入 `retry-unconfirmed`，之后按会话冷却策略继续监控。
+- **先启动 Codex Desktop 并登录**：工具不会启动、登录或修改 Codex 账户、模型和认证配置。
+- **保持前台桌面可用**：UI Automation 通常不需要鼠标前台操作，但窗口更新、搜索和原生回退仍可能受锁屏、最小化或远程桌面断开影响。
+- **不要把普通失败当容量错误**：只有匹配容量分类器的 turn 错误才会触发 Retry；其他错误会留在 Codex 原有流程中。
+- **看不到会话或按钮时**：先确认当前窗口是目标 Codex Desktop，再查看 `ui-controls.log`。工具找不到已验证的会话或 Retry 控件时会记录 `retry-failed`，不会结束 Codex 进程，也不会点击未经确认的控件。
+- **查看当前 UI Automation 树**：
 
-UI 更新导致找不到会话或 Retry 控件时，脚本会写入 `ui-controls.log` 并记录
-`retry-failed`，不会为了恢复任务而结束进程或点击未经确认的会话。可以先运行下面的只读检查
-查看当前 UI Automation 树：
+  ```powershell
+  .\tests\check-desktop.ps1
+  ```
 
-如果 Retry 控件在错误页底部、当前不在视口内，脚本会沿已验证会话的内容区域调用 Windows
-UI Automation 的 `ScrollPattern`，每次向下滚动一个较大的步长，然后重新抓取 UI 树。只有控件
-进入视口、名称匹配且处于启用状态后才会点击；找不到可滚动容器时则继续按 UI 租约和冷却策略等待。
-
-如果侧边栏没有显示对应会话，脚本会打开 Search/搜索，优先用会话标题、没有标题时用
-`session_id` 查询结果；选中结果后还会再次验证当前页面的会话标识，确认无误才继续寻找 Retry。
-
-```powershell
-.\tests\check-desktop.ps1
-```
+  该命令只读检查，不会点击控件。
+- **日志不在默认目录**：在 UI“设置”修改日志目录，或通过 `-LogRoot` 显式指定；目录必须已经存在并能读取 rollout 文件。
+- **数据边界**：`retry-state.json` 会按大小轮转，UI 只能统计当前文件和轮转副本中的事件。不要手动编辑这些状态文件来“补成功”。
+- **重复启动**：UI 已经启动监控器时，不要再启动第二个同配置的根目录监控器，否则两个进程可能竞争同一桌面 UI。
+- **社区项目**：本项目与 OpenAI、Codex Desktop 或 ChatGPT 官方无隶属关系。Codex Desktop UI、rollout 格式或按钮名称变化时，现有匹配逻辑可能需要更新。
 
 ## 项目结构
 
 ```text
-codex-desktop-retry.ps1       # 根目录启动器和参数入口
-retry\Retry.Logs.ps1          # 日志发现、缓存、增量 JSONL 解析
-retry\Retry.State.ps1         # 会话状态和有界状态日志
-retry\Retry.Monitor.ps1       # 容量错误、确认和 UI 租约状态机
-retry\Retry.Ui.ps1            # 会话定位、导航和 Retry 控件调用
-tests\                        # 临时 rollout、启动和桌面检查
-scripts\build-stable.ps1      # 生成冻结版启动器
-releases\                     # 已验证的冻结版
+codex-desktop-retry-ui.ps1   # 推荐入口：本地 Web 控制台与监控器生命周期
+codex-desktop-retry.ps1      # 直接运行监控器的参数入口
+web/                          # HTML、CSS、JavaScript 前端
+retry/Retry.Logs.ps1          # 日志发现与增量 JSONL 解析
+retry/Retry.State.ps1         # 会话状态与有界状态日志
+retry/Retry.Monitor.ps1       # 容量错误、确认与状态机
+retry/Retry.Ui.ps1            # 会话定位、导航与 Retry 控件调用
+retry/Retry.Status.ps1        # UI 统计索引
+retry/Retry.Rollouts.ps1      # UI 侧实时会话索引
+tests/                        # 验证、启动和桌面检查脚本
+scripts/build-stable.ps1      # 生成冻结版启动器
+releases/                     # 已验证的冻结版
 RETRY_SPEC.md                 # 设计边界和可验证行为
+CONTEXT.md                    # 控制台术语与用户可见不变量
 ```
 
 ## 验证
 
-在 Windows PowerShell 7 环境中运行：
+在 Windows PowerShell 7 中运行：
 
 ```powershell
-.\tests\validate-retry.ps1   # 日志监听、turn 确认、轮转和 UI 租约
-.\tests\smoke-start.ps1      # 启动后持续运行检查
-.\tests\smoke-stable.ps1     # 冻结版启动检查
+.\tests\validate-retry.ps1
+.\tests\validate-rollout-index.ps1
+.\tests\validate-status-index.ps1
+.\tests\smoke-start.ps1
+.\tests\smoke-stable.ps1
 ```
 
-`check-desktop.ps1` 只读取当前 UI Automation 树，不会点击控件。真实的 UI 点击行为仍依赖
-当前桌面版本、窗口可见性和交互式 Windows 会话。
+`check-desktop.ps1` 只读取当前 UI Automation 树；真实点击仍取决于当前桌面版本、窗口可见性和交互式 Windows 会话。
 
 ## 许可证
 
 本项目采用 [MIT License](LICENSE)。
-
-本项目是社区脚本，与 OpenAI、Codex Desktop 或 ChatGPT 官方无隶属关系。
