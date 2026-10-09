@@ -1,0 +1,25 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.local
+*.log
+*.pem
+*.key
+credentials.json
+
+# Generated release artifacts
+dist/
+coverage/
