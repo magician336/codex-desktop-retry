@@ -15,9 +15,14 @@ $webRoot = Join-Path $scriptRoot 'web'
 $monitorScript = Join-Path $scriptRoot 'codex-desktop-retry.ps1'
 $taskName = 'Codex Desktop Retry Monitor'
 $monitorProcess = $null
-$liveSessionCache = @()
-$liveSessionScannedAt = [datetime]::MinValue
 $listener = [Net.HttpListener]::new()
+. (Join-Path $PSScriptRoot 'retry\Retry.Status.ps1')
+. (Join-Path $PSScriptRoot 'retry\Retry.Rollouts.ps1')
+$stateIndex = New-RetryStatusIndex
+$liveRolloutIndex = New-RetryRolloutIndex
+$stateEventsChanged = $true
+$stateEventsCache = @()
+$stateSessionCache = $null
 
 function Get-PwshPath {
     $command = Get-Command pwsh -ErrorAction SilentlyContinue
@@ -99,15 +104,11 @@ function Stop-Monitor {
 
 function Read-StateEvents {
     $paths = @($StatePath) + (1..3 | ForEach-Object { "$StatePath.$_" })
-    $events = [Collections.Generic.List[object]]::new()
-    foreach ($path in $paths) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-        foreach ($line in @(Get-Content -LiteralPath $path -ErrorAction SilentlyContinue)) {
-            if (-not $line) { continue }
-            try { $events.Add(($line | ConvertFrom-Json)) } catch { }
-        }
-    }
-    return @($events | Sort-Object timestamp)
+    $revision = $stateIndex.Stats.Revision
+    $events = @(Get-RetryStatusEvents $stateIndex $paths)
+    $script:stateEventsChanged = $revision -ne $stateIndex.Stats.Revision
+    if ($script:stateEventsChanged) { $script:stateEventsCache = $events }
+    return @($script:stateEventsCache)
 }
 
 function Get-NormalizedFailure([string]$Detail, [string]$Event) {
@@ -129,47 +130,13 @@ function Read-EventProperty($Event, [string]$Name) {
 }
 
 function Get-LiveRolloutSessions {
-    if ((Get-Date) - $script:liveSessionScannedAt -lt [TimeSpan]::FromSeconds(15)) { return @($script:liveSessionCache) }
-    $found = @{}
-    $titleMap = @{}
     $settings = Read-Settings
-    foreach ($root in @($settings.logRoot)) {
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-        $index = Join-Path $root 'session_index.jsonl'
-        if (Test-Path -LiteralPath $index -PathType Leaf) {
-            foreach ($line in @(Get-Content -LiteralPath $index -ErrorAction SilentlyContinue)) {
-                try { $row = $line | ConvertFrom-Json; $id = [string](Read-EventProperty $row 'id'); $name = [string](Read-EventProperty $row 'thread_name'); if ($id -and $name) { $titleMap[$id] = $name } } catch { }
-            }
-        }
-        foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter 'rollout-*.jsonl' -Recurse -File -ErrorAction SilentlyContinue)) {
-            $sessionId = ''; $title = ''
-            foreach ($line in @(Get-Content -LiteralPath $file.FullName -TotalCount 12 -ErrorAction SilentlyContinue)) {
-                try {
-                    $row = $line | ConvertFrom-Json
-                    $payload = Read-EventProperty $row 'payload'
-                    $candidate = if ($payload) { $payload } else { $row }
-                    $candidateId = [string](Read-EventProperty $candidate 'session_id')
-                    if ((Read-EventProperty $row 'type') -eq 'session_meta') { $candidateId = [string](Read-EventProperty $candidate 'id') }
-                    if ($candidateId) { $sessionId = $candidateId }
-                    if (-not $title) { $title = [string](Read-EventProperty $candidate 'thread_name') }
-                    if (-not $title) { $title = [string](Read-EventProperty $candidate 'message') }
-                } catch { }
-                if ($sessionId -and $title) { break }
-            }
-            if (-not $sessionId) { $sessionId = [IO.Path]::GetFileNameWithoutExtension($file.Name) }
-            if ($titleMap.ContainsKey($sessionId)) { $title = $titleMap[$sessionId] }
-            if (-not $title) { $title = $sessionId }
-            $found[$sessionId] = [ordered]@{ id = $sessionId; title = $title; hasRecord = $false; capacityErrors = 0; successes = 0; failures = 0; attempts = 0; firstSeen = ''; lastError = ''; lastEvent = 'listening'; lastEventAt = $file.LastWriteTime.ToString('o'); reasons = @{}; timeline = @() }
-        }
-    }
-    $script:liveSessionCache = @($found.Values); $script:liveSessionScannedAt = Get-Date
-    return @($script:liveSessionCache)
+    return @(Get-RetryLiveRolloutSessions $liveRolloutIndex @($settings.logRoot))
 }
 
-function Get-StatusPayload {
-    $events = @(Read-StateEvents)
+function Build-StateSessionCache($Events) {
     $sessionMap = @{}
-    foreach ($event in $events) {
+    foreach ($event in $Events) {
         $key = [string](Read-EventProperty $event 'session')
         if (-not $key) { continue }
         if (-not $sessionMap.ContainsKey($key)) {
@@ -187,6 +154,16 @@ function Get-StatusPayload {
         }
         if ($row.timeline.Count -lt 100) { $row.timeline.Add([ordered]@{ at = $eventTime; event = $eventName; detail = $eventDetail; reason = if ($eventName -in @('retry-failed','retry-unconfirmed','limit-reached')) { Get-NormalizedFailure $eventDetail $eventName } else { '' } }) }
     }
+    return @($sessionMap.Values)
+}
+
+function Get-StatusPayload {
+    $events = @(Read-StateEvents)
+    if ($stateEventsChanged -or $null -eq $stateSessionCache) {
+        $script:stateSessionCache = @(Build-StateSessionCache $events)
+    }
+    $sessionMap = @{}
+    foreach ($row in @($stateSessionCache)) { $sessionMap[$row.id] = $row }
     foreach ($live in @(Get-LiveRolloutSessions)) {
         if (-not $sessionMap.ContainsKey($live.id)) { $sessionMap[$live.id] = $live }
     }
@@ -255,4 +232,4 @@ try {
     Write-Host "Retry console running at $url" -ForegroundColor Cyan
     if (-not $NoBrowser) { Start-Process $url }
     while ($listener.IsListening) { try { Serve-Request ($listener.GetContext()) } catch { Write-Warning $_.Exception.Message } }
-} finally { try { if ($listener.IsListening) { $listener.Stop() } } catch { }; Stop-Monitor }
+} finally { try { if ($listener.IsListening) { $listener.Stop() } } catch { }; Stop-RetryRolloutWatchers $liveRolloutIndex; Stop-Monitor }
