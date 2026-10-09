@@ -159,7 +159,7 @@ function Get-LiveRolloutSessions {
             if (-not $sessionId) { $sessionId = [IO.Path]::GetFileNameWithoutExtension($file.Name) }
             if ($titleMap.ContainsKey($sessionId)) { $title = $titleMap[$sessionId] }
             if (-not $title) { $title = $sessionId }
-            $found[$sessionId] = [ordered]@{ id = $sessionId; title = $title; capacityErrors = 0; successes = 0; failures = 0; attempts = 0; firstSeen = ''; lastError = ''; lastEvent = 'listening'; lastEventAt = $file.LastWriteTime.ToString('o'); reasons = @{}; timeline = @() }
+            $found[$sessionId] = [ordered]@{ id = $sessionId; title = $title; hasRecord = $false; capacityErrors = 0; successes = 0; failures = 0; attempts = 0; firstSeen = ''; lastError = ''; lastEvent = 'listening'; lastEventAt = $file.LastWriteTime.ToString('o'); reasons = @{}; timeline = @() }
         }
     }
     $script:liveSessionCache = @($found.Values); $script:liveSessionScannedAt = Get-Date
@@ -173,7 +173,7 @@ function Get-StatusPayload {
         $key = [string](Read-EventProperty $event 'session')
         if (-not $key) { continue }
         if (-not $sessionMap.ContainsKey($key)) {
-            $sessionMap[$key] = [ordered]@{ id = $key; title = ($key -replace '^path:', '' -replace '\\', '/'); capacityErrors = 0; successes = 0; failures = 0; attempts = 0; firstSeen = ''; lastError = ''; lastEvent = ''; lastEventAt = ''; reasons = @{}; timeline = [Collections.Generic.List[object]]::new() }
+            $sessionMap[$key] = [ordered]@{ id = $key; title = ($key -replace '^path:', '' -replace '\\', '/'); hasRecord = $true; capacityErrors = 0; successes = 0; failures = 0; attempts = 0; firstSeen = ''; lastError = ''; lastEvent = ''; lastEventAt = ''; reasons = @{}; timeline = [Collections.Generic.List[object]]::new() }
         }
         $row = $sessionMap[$key]
         $eventName = [string](Read-EventProperty $event 'event'); $eventTime = [string](Read-EventProperty $event 'timestamp'); $eventDetail = [string](Read-EventProperty $event 'detail')
@@ -191,7 +191,7 @@ function Get-StatusPayload {
         if (-not $sessionMap.ContainsKey($live.id)) { $sessionMap[$live.id] = $live }
     }
     $sessions = @($sessionMap.Values | ForEach-Object {
-        [pscustomobject]@{ id = $_.id; title = $_.title; capacityErrors = $_.capacityErrors; successes = $_.successes; failures = $_.failures; attempts = $_.attempts; firstSeen = $_.firstSeen; lastError = $_.lastError; lastEvent = $_.lastEvent; lastEventAt = $_.lastEventAt; reasons = $_.reasons; timeline = @($_.timeline) }
+        [pscustomobject]@{ id = $_.id; title = $_.title; hasRecord = $_.hasRecord; capacityErrors = $_.capacityErrors; successes = $_.successes; failures = $_.failures; attempts = $_.attempts; firstSeen = $_.firstSeen; lastError = $_.lastError; lastEvent = $_.lastEvent; lastEventAt = $_.lastEventAt; reasons = $_.reasons; timeline = @($_.timeline) }
     } | Sort-Object lastEventAt -Descending)
     $total = [ordered]@{ sessions = $sessions.Count; capacityErrors = 0; attempts = 0; successes = 0; failures = 0 }
     foreach ($session in $sessions) { $total.capacityErrors += $session.capacityErrors; $total.attempts += $session.attempts; $total.successes += $session.successes; $total.failures += $session.failures }
