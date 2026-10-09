@@ -1,5 +1,9 @@
 retry-state.json
+retry-state.json.*
+releases/**/retry-state.json*
+retry-progress.json
 ui-controls.log
 steady-relay/steady-relay.exe
 *.tmp
 *.log
+*.log.*
