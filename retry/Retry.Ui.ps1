@@ -231,11 +231,26 @@ public static class RetryNativeMouse {
 "@
 }
 
-function Invoke-VerifiedRetryControl($Snapshot, $Window, $Monitor) {
-    $content = @($Snapshot | Where-Object { $_.Visible -and $_.Enabled -and -not $_.Sidebar -and -not $_.SearchRegion })
-    $candidates = @($content | Where-Object {
+function Get-DesktopRetryCandidates($Content) {
+    $candidates = @($Content | Where-Object {
         $_.Type -eq 'Button' -and $_.Name -match '(?i)^(Retry|Try again|重试|再次尝试)(\s|$|[：:])|\d+\s*(秒|s).*(重试|retry)|(重试|retry).*\d+\s*(秒|s)'
     })
+    if ($candidates.Count -gt 0) { return $candidates }
+    # Current Codex Desktop renders a capacity failure as a reconnect overlay
+    # while it exhausts its own attempts. The overlay has no InvokePattern, but
+    # it is the only visible action inside a content area that contains the
+    # capacity message, so the native foreground fallback can click it safely.
+    $capacity = @($Content | Where-Object { $_.Type -in @('Text', 'Group') -and (Test-CapacityText $_.Name) })
+    $reconnect = @($Content | Where-Object {
+        $_.Type -eq 'Button' -and $_.Name -match '(?i)^(正在重新连接|reconnecting)\s*\d+\s*/\s*\d+$'
+    })
+    if ($capacity.Count -gt 0 -and $reconnect.Count -eq 1) { return $reconnect }
+    return @()
+}
+
+function Invoke-VerifiedRetryControl($Snapshot, $Window, $Monitor) {
+    $content = @($Snapshot | Where-Object { $_.Visible -and $_.Enabled -and -not $_.Sidebar -and -not $_.SearchRegion })
+    $candidates = @(Get-DesktopRetryCandidates $content)
     if ($candidates.Count -eq 0) {
         # Some versions expose only the composer primary button for capacity retry.
         # An empty editor and visible capacity error are both required.

@@ -80,6 +80,11 @@ try {
     Assert ($uiText -match 'ScrollPattern') 'Retry UI does not expose scroll-container handling.'
     Assert ($uiText -match 'Invoke-UiScrollForRetry') 'Retry UI does not scroll when the control is below the viewport.'
     Assert ($null -ne ('Windows.Automation.AutomationElement' -as [type])) 'UIAutomation assembly was not loaded for isolated UI steps.'
+    $capacityUiNode = [pscustomobject]@{ Name = 'Selected model is at capacity. Please try a different model.'; Type = 'Text'; Enabled = $true; Visible = $true; Sidebar = $false; SearchRegion = $false }
+    $reconnectUiNode = [pscustomobject]@{ Name = '正在重新连接 5 /5'; Type = 'Button'; Enabled = $true; Visible = $true; Sidebar = $false; SearchRegion = $false }
+    $retryCandidates = @(Get-DesktopRetryCandidates @($capacityUiNode, $reconnectUiNode))
+    Assert ($retryCandidates.Count -eq 1 -and $retryCandidates[0].Name -eq '正在重新连接 5 /5') 'Capacity reconnect control was not recognized as the retry target.'
+    Assert (@(Get-DesktopRetryCandidates @($capacityUiNode)).Count -eq 0) 'Missing retry controls produced a phantom UI candidate.'
     $adapter = [pscustomobject]@{}
     Add-Member -InputObject $adapter -MemberType ScriptMethod -Name Step -Value { param($Request, [datetime] $Now) 'Clicked' }
     $monitor2 = New-RetryMonitor $options
