@@ -199,9 +199,11 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
         $before = [IO.FileInfo]::new($request.Hint.SourcePath).Length
         $result = $Adapter.Step($request, $Now)
         if ($result -eq 'Clicked') {
-            $request.Boundary = $before; $request.ConfirmDeadline = $Now.AddSeconds($Monitor.Options.RetryConfirmSeconds)
-            $state.Phase = 'confirming'; $state.NextEligible = $Now.AddSeconds($Monitor.Options.CooldownSeconds)
+            # A verified click is the outcome this tool owns. Do not turn a
+            # later server-side capacity response into a false UI failure.
+            # A subsequent capacity event will enqueue a separate request.
             Write-RetryState $Monitor 'retry-clicked' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId; offset = $before }
+            $state.RetryCount = 0; $state.Active = $null; $state.Phase = 'observing'
             $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue
         } elseif ($result -eq 'Cancelled') {
             Write-RetryState $Monitor 'retry-superseded' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId }

@@ -12,8 +12,8 @@ The project is a local Windows operator console for the Codex Desktop retry moni
 - **Session**: A Codex conversation identified by its session id; the source path is used only as a fallback identity.
 - **Capacity error**: A turn-scoped error that matches the monitor's capacity classifier.
 - **Attempt**: One verified Retry control invocation associated with a capacity error.
-- **Success**: A `retry-confirmed` event tied to the triggering rollout and turn (or its verified post-click turn).
-- **Failure**: A `retry-failed`, `retry-unconfirmed`, or `limit-reached` event retained in the state history.
+- **Success**: A verified Retry click recorded as `retry-clicked`; the dashboard counts one click as one success.
+- **Failure**: A `retry-failed` or `limit-reached` event retained in the state history. A later capacity response is a new capacity event, not a failure of the prior click.
 - **Retained history**: The active state JSONL plus its configured rotated files. The console reports this boundary explicitly.
 
 ## User-facing invariants

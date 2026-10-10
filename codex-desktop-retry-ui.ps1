@@ -76,8 +76,8 @@ function Start-Monitor {
     $settings = Read-Settings
     Write-Control $false
     $argList = [Collections.Generic.List[string]]::new()
-    foreach ($value in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitorScript, '-LogRoot')) { [void]$argList.Add([string]$value) }
-    [void]$argList.Add(([string](@($settings.logRoot) -join ',')))
+    foreach ($value in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitorScript)) { [void]$argList.Add([string]$value) }
+    [void]$argList.Add('-LogRoot'); [void]$argList.Add(([string](@($settings.logRoot) -join ',')))
     [void]$argList.Add('-ProcessName'); [void]$argList.Add(([string](@($settings.processName) -join ',')))
     foreach ($pair in @(
         @('-MaxRetries', [string]$settings.maxRetries), @('-BackoffSeconds', [string](@($settings.backoffSeconds) -join ',')),
@@ -146,8 +146,7 @@ function Build-StateSessionCache($Events) {
         $eventName = [string](Read-EventProperty $event 'event'); $eventTime = [string](Read-EventProperty $event 'timestamp'); $eventDetail = [string](Read-EventProperty $event 'detail')
         $row.lastEvent = $eventName; $row.lastEventAt = $eventTime
         if ($eventName -eq 'capacity-detected') { $row.capacityErrors++; if (-not $row.firstSeen) { $row.firstSeen = $eventTime } }
-        if ($eventName -in @('retry-clicked', 'retry-invoked')) { $row.attempts++ }
-        if ($eventName -eq 'retry-confirmed') { $row.successes++ }
+        if ($eventName -in @('retry-clicked', 'retry-invoked')) { $row.attempts++; $row.successes++ }
         if ($eventName -in @('retry-failed', 'retry-unconfirmed', 'limit-reached')) {
             $row.failures++; $row.lastError = Get-NormalizedFailure $eventDetail $eventName
             $reason = $row.lastError; if (-not $row.reasons.ContainsKey($reason)) { $row.reasons[$reason] = 0 }; $row.reasons[$reason]++

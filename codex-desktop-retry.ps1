@@ -34,6 +34,10 @@ if ($BackoffSeconds.Count -eq 0 -or @($BackoffSeconds | Where-Object { $_ -lt 0 
 }
 if ($StateMaxBytes -lt 4096) { throw 'StateMaxBytes must be at least 4096.' }
 if ($StateMaxFiles -lt 1) { throw 'StateMaxFiles must be at least 1.' }
+# Accept legacy comma-separated command-line values while preserving repeated
+# -ProcessName arguments emitted by the UI launcher.
+$ProcessName = @($ProcessName | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($ProcessName.Count -eq 0) { throw 'ProcessName must contain at least one process name.' }
 
 # Only one monitor may consume a given rollout root. Multiple UI consoles can
 # otherwise watch the same capacity event and race each other's UI leases,

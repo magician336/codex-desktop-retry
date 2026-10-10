@@ -86,25 +86,13 @@ try {
     Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"error","turn_id":"turn-b","message":"server_is_overloaded"}}' -Encoding UTF8
     Invoke-RetryMonitorTick $monitor2 $adapter (Get-Date)
     $state2 = $monitor2.Sessions['session-a']
-    Assert ($state2.Phase -eq 'confirming') 'Monitor did not enter per-session confirmation.'
-    Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-b"}}' -Encoding UTF8
-    Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-b"}}' -Encoding UTF8
-    Invoke-RetryMonitorTick $monitor2 $adapter (Get-Date)
-    Assert ($state2.Phase -eq 'confirmed') 'Monitor did not confirm the matching turn.'
+    Assert ($state2.Phase -eq 'observing' -and -not $state2.Active) 'A verified click did not complete the retry request.'
     $monitor3 = New-RetryMonitor $options
     Update-RetryLogCache $monitor3 (Get-Date) -Force
     Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"error","turn_id":"turn-c","message":"server_is_overloaded"}}' -Encoding UTF8
     Invoke-RetryMonitorTick $monitor3 $adapter (Get-Date)
     $state3 = $monitor3.Sessions['session-a']
-    Assert ($state3.Phase -eq 'confirming') 'Monitor did not enter confirmation for a new turn.'
-    Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-d"}}' -Encoding UTF8
-    Invoke-RetryMonitorTick $monitor3 $adapter (Get-Date)
-    Assert ($state3.Phase -eq 'confirming') 'An unlinked turn start must remain a candidate until context and output are observed.'
-    Assert ($state3.Active.CandidateTurnId -eq 'turn-d') 'Unlinked turn candidate was not recorded.'
-    Add-Content -LiteralPath $rollout -Value '{"type":"turn_context","payload":{"turn_id":"turn-d"}}' -Encoding UTF8
-    Add-Content -LiteralPath $rollout -Value '{"type":"event_msg","payload":{"type":"response.completed","turn_id":"turn-d"}}' -Encoding UTF8
-    Invoke-RetryMonitorTick $monitor3 $adapter (Get-Date)
-    Assert ($state3.Phase -eq 'confirmed') 'Post-click unlinked turn was not confirmed by context and completion.'
+    Assert ($state3.Phase -eq 'observing' -and -not $state3.Active) 'A repeated capacity error did not produce an independent click attempt.'
     $leaseOptions = @{}; foreach ($entry in $options.GetEnumerator()) { $leaseOptions[$entry.Key] = $entry.Value }
     $leaseOptions.StatePath = Join-Path $temp 'lease-state.jsonl'
     $leaseOptions.UiLeaseSeconds = 1

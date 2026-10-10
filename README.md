@@ -62,9 +62,9 @@ Codex Desktop
     │ 校验当前会话、查找可见且启用的 Retry 控件
     ▼
 Retry / Try again
-    │ 等待同一 rollout 的明确恢复事件
+    │ 已验证点击即记为一次成功
     ▼
-retry-confirmed / retry-unconfirmed / retry-failed
+retry-clicked / retry-failed
     │
 本地状态 JSONL → Web UI 统计与时间线
 ```
@@ -72,9 +72,9 @@ retry-confirmed / retry-unconfirmed / retry-failed
 实现分为四层：
 
 1. **日志层**使用 `FileSystemWatcher` 监听新增和变更文件，并按增量偏移读取 JSONL；同时按 `-RescanSeconds` 做低频兜底扫描。只处理 `rollout-*.jsonl`，不会把 `session_index.jsonl` 当作重试事件。
-2. **状态机**以 `session_id` 隔离冷却时间、退避序列、重试次数和待确认请求。一个会话的重试额度不会被另一个会话消耗。启动时已存在的历史错误会被跳过，避免首次运行重放旧事件。
+2. **状态机**以 `session_id` 隔离冷却时间、退避序列、重试次数和待处理请求。一个会话的重试额度不会被另一个会话消耗。启动时已存在的历史错误会被跳过，避免首次运行重放旧事件。
 3. **UI 层**优先使用 Windows UI Automation。它会验证会话标识、必要时搜索会话、滚动内容区域，再检查 Retry 控件名称、可见性和启用状态。只有找到目标会话中的控件才会点击；原生鼠标是显式开启的最后回退。
-4. **确认层**点击后不会立即算成功。监控器必须在触发错误的 rollout 中看到匹配 turn 的输出或完成事件；若 Retry 创建了没有 `parent_turn_id` 的新 turn，还要先看到该 turn 的上下文，再看到它自己的输出或完成事件。超时记录为 `retry-unconfirmed`。
+4. **结果层**只对 UI 自动化负责：在目标会话中验证并点击 Retry 后，立即写入 `retry-clicked`，控制台将其计为一次成功。点击后服务端再次返回容量错误时，按新的容量事件单独排队，不把它归因于本次点击失败。
 
 状态和 UI 诊断默认写入仓库目录：`retry-state.json`（含轮转副本）和 `ui-controls.log`。控制台使用这些保留文件生成统计，因此 UI 展示的是“当前文件及轮转副本”范围内的历史，不是永久数据库。
 
@@ -96,7 +96,7 @@ retry-confirmed / retry-unconfirmed / retry-failed
 | `-BackoffSeconds` | `0` | 退避序列，例如 `30,60,120` |
 | `-CooldownSeconds` | `20` | 同一会话两次尝试之间的冷却时间 |
 | `-RetryUiWaitSeconds` | `90` | 等待 UI 控件出现的时间 |
-| `-RetryConfirmSeconds` | `30` | 等待恢复事件的时间 |
+| `-RetryConfirmSeconds` | `30` | 兼容旧配置保留；当前不等待恢复事件 |
 | `-UiLeaseSeconds` | `5` | 多会话共享桌面 UI 时的单次租约 |
 | `-RescanSeconds` | `60` | 兜底重扫间隔，至少 10 秒 |
 | `-AllowNativeClick` | 关闭 | 允许前台桌面鼠标回退 |
