@@ -9,6 +9,7 @@ param(
     [int] $RetryUiWaitSeconds = 90,
     [int] $RetryConfirmSeconds = 30,
     [int] $UiLeaseSeconds = 5,
+    [int] $UiSnapshotMaxMilliseconds = 5000,
     [int] $RescanSeconds = 60,
     [int64] $StateMaxBytes = 1048576,
     [int] $StateMaxFiles = 3,
@@ -26,6 +27,7 @@ if ($CooldownSeconds -lt 0) { throw 'CooldownSeconds must be >= 0.' }
 if ($RetryUiWaitSeconds -le 0) { throw 'RetryUiWaitSeconds must be > 0.' }
 if ($RetryConfirmSeconds -le 0) { throw 'RetryConfirmSeconds must be > 0.' }
 if ($UiLeaseSeconds -le 0) { throw 'UiLeaseSeconds must be > 0.' }
+if ($UiSnapshotMaxMilliseconds -lt 500) { throw 'UiSnapshotMaxMilliseconds must be >= 500.' }
 if ($RescanSeconds -lt 10) { throw 'RescanSeconds must be at least 10.' }
 if ($BackoffSeconds.Count -eq 0 -or @($BackoffSeconds | Where-Object { $_ -lt 0 }).Count -gt 0) {
     throw 'BackoffSeconds must contain non-negative values.'
@@ -58,7 +60,8 @@ $options = @{
     LogRoot = $LogRoot; ProcessName = $ProcessName; MaxRetries = $MaxRetries
     BackoffSeconds = $BackoffSeconds; CooldownSeconds = $CooldownSeconds
     RetryUiWaitSeconds = $RetryUiWaitSeconds; RetryConfirmSeconds = $RetryConfirmSeconds
-    UiLeaseSeconds = $UiLeaseSeconds; RescanSeconds = $RescanSeconds
+    UiLeaseSeconds = $UiLeaseSeconds; UiSnapshotMaxMilliseconds = $UiSnapshotMaxMilliseconds
+    RescanSeconds = $RescanSeconds
     StateMaxBytes = $StateMaxBytes; StateMaxFiles = $StateMaxFiles
     AllowNativeClick = $AllowNativeClick.IsPresent; StatePath = $StatePath
     UiDiagnosticPath = $UiDiagnosticPath; ControlPath = $ControlPath

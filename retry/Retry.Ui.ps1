@@ -18,8 +18,34 @@ function Get-DesktopWindows($Monitor) {
 
 function Read-DesktopSnapshot($Window, $Monitor) {
     $root = [Windows.Automation.AutomationElement]::FromHandle($Window.Handle)
-    $all = $root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-    foreach ($element in $all) {
+    # FindAll can block inside the Electron accessibility provider while a
+    # response is rendering. A blocked snapshot also blocks the monitor's
+    # deadline and prevents every other session from being retried. Walk the
+    # control tree in bounded steps so a bad provider call becomes a normal
+    # retry-failed event instead of a stuck UI lease.
+    $maxMilliseconds = 5000
+    if ($Monitor.Options.ContainsKey('UiSnapshotMaxMilliseconds')) {
+        $maxMilliseconds = [int]$Monitor.Options.UiSnapshotMaxMilliseconds
+    }
+    if ($maxMilliseconds -lt 500) { $maxMilliseconds = 500 }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $walker = [Windows.Automation.TreeWalker]::ControlViewWalker
+    $pending = [Collections.Generic.Stack[object]]::new()
+    $child = $walker.GetFirstChild($root)
+    while ($child) {
+        $pending.Push($child)
+        $child = $walker.GetNextSibling($child)
+    }
+    while ($pending.Count -gt 0) {
+        if ($clock.ElapsedMilliseconds -ge $maxMilliseconds) {
+            throw "UI snapshot exceeded ${maxMilliseconds}ms."
+        }
+        $element = $pending.Pop()
+        $child = $walker.GetFirstChild($element)
+        while ($child) {
+            $pending.Push($child)
+            $child = $walker.GetNextSibling($child)
+        }
         try {
             $current = $element.Current
             $sidebar = $current.ClassName -match 'sidebar-item|sidebar-row|folder-row|group/cwd'
@@ -309,11 +335,116 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
     }
 }
 
+function Invoke-DesktopRetryStepIsolated($Monitor, $Request, [datetime] $Now) {
+    # UIA calls are COM calls into the Electron accessibility provider. A
+    # provider deadlock cannot be interrupted from the calling runspace, so
+    # execute one UI step in a child PowerShell process and impose a hard
+    # wall-clock limit around it. The parent monitor remains able to observe
+    # rollout files and schedule another session when the child is stopped.
+    $repo = Split-Path -Parent $PSScriptRoot
+    $maxSnapshot = 5000
+    if ($Monitor.Options.ContainsKey('UiSnapshotMaxMilliseconds')) {
+        $maxSnapshot = [int]$Monitor.Options.UiSnapshotMaxMilliseconds
+    }
+    $timeoutMilliseconds = [Math]::Max(10000, $maxSnapshot + 10000)
+    $windowHandle = [int64]0
+    $windowProcessId = 0
+    if ($Request.Window) {
+        $windowHandle = ([IntPtr]$Request.Window.Handle).ToInt64()
+        $windowProcessId = [int]$Request.Window.ProcessId
+    }
+    $activeTurns = @()
+    if ($Monitor.Files.ContainsKey($Request.Hint.SourcePath)) {
+        $activeTurns = @($Monitor.Files[$Request.Hint.SourcePath].ActiveTurns.Keys)
+    }
+    $titleRows = @($Monitor.Titles.GetEnumerator() | ForEach-Object {
+        [pscustomobject]@{ Id = [string]$_.Key; Title = [string]$_.Value }
+    })
+    $payload = [ordered]@{
+        Now = $Now.ToString('o')
+        Hint = [ordered]@{
+            SessionId = [string]$Request.Hint.SessionId; IsSubagent = [bool](Get-RetryField $Request.Hint 'IsSubagent' $false)
+            TurnId = [string]$Request.Hint.TurnId; Title = [string]$Request.Hint.Title
+            SourcePath = [string]$Request.Hint.SourcePath
+        }
+        Stage = [string]$Request.Stage; ReadyAt = $Request.ReadyAt.ToString('o')
+        SearchText = [string]$Request.SearchText; WindowHandle = $windowHandle; WindowProcessId = $windowProcessId
+        ActiveTurns = $activeTurns; Titles = $titleRows
+    }
+    $optionsJson = $Monitor.Options | ConvertTo-Json -Compress -Depth 8
+    $payloadJson = $payload | ConvertTo-Json -Compress -Depth 8
+    $job = $null
+    try {
+        $job = Start-Job -ScriptBlock {
+            param($WorkerRepo, $OptionsJson, $PayloadJson)
+            Set-StrictMode -Version Latest
+            $ErrorActionPreference = 'Stop'
+            . (Join-Path $WorkerRepo 'retry\Retry.Logs.ps1')
+            . (Join-Path $WorkerRepo 'retry\Retry.State.ps1')
+            . (Join-Path $WorkerRepo 'retry\Retry.Ui.ps1')
+            $rawOptions = $OptionsJson | ConvertFrom-Json
+            $options = @{}
+            foreach ($property in $rawOptions.PSObject.Properties) { $options[$property.Name] = $property.Value }
+            $payload = $PayloadJson | ConvertFrom-Json
+            $hint = [pscustomobject]@{
+                SessionId = [string]$payload.Hint.SessionId; IsSubagent = [bool]$payload.Hint.IsSubagent
+                TurnId = [string]$payload.Hint.TurnId; Title = [string]$payload.Hint.Title
+                SourcePath = [string]$payload.Hint.SourcePath
+            }
+            $request = [pscustomobject]@{
+                Hint = $hint; Stage = [string]$payload.Stage; ReadyAt = [datetime]$payload.ReadyAt
+                UiDeadline = [datetime]::MinValue; ConfirmDeadline = [datetime]::MinValue
+                Boundary = [int64]::MaxValue; LinkedTurns = @{}; Window = $null; Target = $null
+                SearchText = [string]$payload.SearchText; Started = $false; CandidateTurnId = ''
+                CandidateContext = $false; CandidateOutput = $false; Superseded = $false; AttemptCounted = $true
+            }
+            if ([int64]$payload.WindowHandle -ne 0) {
+                $request.Window = [pscustomobject]@{ Handle = [IntPtr]::new([int64]$payload.WindowHandle); ProcessId = [int]$payload.WindowProcessId }
+            }
+            $titles = @{}
+            foreach ($row in @($payload.Titles)) { if ($row.Id) { $titles[[string]$row.Id] = [string]$row.Title } }
+            $cursor = [pscustomobject]@{ ActiveTurns = @{} }
+            foreach ($turn in @($payload.ActiveTurns)) { if ($turn) { $cursor.ActiveTurns[[string]$turn] = $true } }
+            $monitor = [pscustomobject]@{
+                Options = $options; Titles = $titles; Files = @{ $hint.SourcePath = $cursor }
+                UiLines = [Collections.Generic.List[string]]::new()
+                StateMutex = [Threading.Mutex]::new($false, 'Local\CodexDesktopRetryState')
+            }
+            try {
+                $adapter = [pscustomobject]@{ Monitor = $monitor }
+                $result = Step-DesktopRetry $adapter $request ([datetime]$payload.Now)
+                [pscustomobject]@{
+                    Result = [string]$result; Stage = [string]$request.Stage; SearchText = [string]$request.SearchText
+                    ReadyAt = $request.ReadyAt.ToString('o'); WindowHandle = if ($request.Window) { ([IntPtr]$request.Window.Handle).ToInt64() } else { [int64]0 }
+                    WindowProcessId = if ($request.Window) { [int]$request.Window.ProcessId } else { 0 }
+                }
+            } finally { $monitor.StateMutex.Dispose() }
+        } -ArgumentList $repo, $optionsJson, $payloadJson
+        $waitSeconds = [int][Math]::Ceiling($timeoutMilliseconds / 1000.0)
+        if (-not (Wait-Job -Job $job -Timeout $waitSeconds)) {
+            Stop-Job -Job $job -Force -ErrorAction SilentlyContinue
+            throw "Isolated UI step exceeded ${timeoutMilliseconds}ms."
+        }
+        $rows = @(Receive-Job -Job $job -ErrorAction Stop)
+        if ($rows.Count -ne 1) { throw 'Isolated UI step returned no result.' }
+        $result = $rows[0]
+        $Request.Stage = [string]$result.Stage
+        $Request.SearchText = [string]$result.SearchText
+        $Request.ReadyAt = [datetime]$result.ReadyAt
+        if ([int64]$result.WindowHandle -ne 0) {
+            $Request.Window = [pscustomobject]@{ Handle = [IntPtr]::new([int64]$result.WindowHandle); ProcessId = [int]$result.WindowProcessId }
+        }
+        return [string]$result.Result
+    } finally {
+        if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function New-DesktopRetryAdapter($Monitor) {
     $adapter = [pscustomobject]@{ Monitor = $Monitor }
     Add-Member -InputObject $adapter -MemberType ScriptMethod -Name Step -Value {
         param($Request, [datetime] $Now)
-        Step-DesktopRetry $this $Request $Now
+        Invoke-DesktopRetryStepIsolated $this.Monitor $Request $Now
     }
     return $adapter
 }
