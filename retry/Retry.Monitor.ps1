@@ -137,7 +137,11 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
         $ownerKey = $Monitor.UiOwner
         if ($Monitor.Sessions.ContainsKey($ownerKey) -and $Monitor.Sessions[$ownerKey].Active) {
             $ownerState = $Monitor.Sessions[$ownerKey]
-            $ownerState.Active.Stage = 'resolve'; $ownerState.Active.Window = $null
+            # Yield ownership without discarding UI progress. Re-resolving from
+            # scratch on every 5-second lease caused search-input/results stages
+            # to restart indefinitely, especially when Electron needed time to
+            # render the result list. The next owner can continue with the
+            # existing window and stage; the normal deadline still bounds it.
             $ownerState.Phase = 'waiting'; $ownerState.NextEligible = $Now
             Write-RetryState $Monitor 'ui-yield' $ownerState.Active.Hint.SourcePath $ownerKey @{ leaseSeconds = $leaseSeconds }
         }

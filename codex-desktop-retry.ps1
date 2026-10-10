@@ -33,6 +33,23 @@ if ($BackoffSeconds.Count -eq 0 -or @($BackoffSeconds | Where-Object { $_ -lt 0 
 if ($StateMaxBytes -lt 4096) { throw 'StateMaxBytes must be at least 4096.' }
 if ($StateMaxFiles -lt 1) { throw 'StateMaxFiles must be at least 1.' }
 
+# Only one monitor may consume a given rollout root. Multiple UI consoles can
+# otherwise watch the same capacity event and race each other's UI leases,
+# producing repeated ui-yield/retry-superseded results. A per-root named mutex
+# also works when each console uses its own temporary state file.
+$rootKey = [string](@($LogRoot | Sort-Object) -join '|')
+$sha = [Security.Cryptography.SHA256]::Create()
+try { $rootHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($rootKey))).Replace('-', '')).Substring(0, 24) }
+finally { $sha.Dispose() }
+$mutexName = "Local\CodexDesktopRetryMonitor-$rootHash"
+$mutexCreated = $false
+$monitorMutex = [Threading.Mutex]::new($false, $mutexName, [ref]$mutexCreated)
+if (-not $mutexCreated) {
+    $monitorMutex.Dispose()
+    Write-Error "A Codex Desktop retry monitor is already running for: $rootKey"
+    exit 2
+}
+
 . (Join-Path $PSScriptRoot 'retry\Retry.Logs.ps1')
 . (Join-Path $PSScriptRoot 'retry\Retry.State.ps1')
 . (Join-Path $PSScriptRoot 'retry\Retry.Ui.ps1')
@@ -71,4 +88,4 @@ try {
         }
         Start-Sleep -Milliseconds ([Math]::Max(50, [int]($PollSeconds * 1000)))
     }
-} finally { $monitor.StateMutex.Dispose() }
+} finally { $monitor.StateMutex.Dispose(); $monitorMutex.ReleaseMutex(); $monitorMutex.Dispose() }

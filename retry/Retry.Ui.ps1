@@ -1,9 +1,17 @@
 # Desktop adapter: session resolver -> navigation -> retry actuator.
 function Get-DesktopWindows($Monitor) {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-    foreach ($process in @(Get-Process -Name $Monitor.Options.ProcessName -ErrorAction SilentlyContinue)) {
-        if ($process.MainWindowHandle -ne 0) {
-            [pscustomobject]@{ Handle = $process.MainWindowHandle; ProcessId = $process.Id }
+    # PowerShell's -Name binding behaves differently across versions when given
+    # an array. Enumerate each configured name explicitly and de-duplicate the
+    # handles; Electron can expose several renderer processes for one window.
+    $seen = @{}
+    foreach ($name in @($Monitor.Options.ProcessName)) {
+        foreach ($process in @(Get-Process -Name ([string]$name) -ErrorAction SilentlyContinue)) {
+            $handle = [IntPtr]$process.MainWindowHandle
+            if ($handle -ne [IntPtr]::Zero -and -not $seen.ContainsKey($handle.ToInt64())) {
+                $seen[$handle.ToInt64()] = $true
+                [pscustomobject]@{ Handle = $handle; ProcessId = $process.Id }
+            }
         }
     }
 }
@@ -236,7 +244,17 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
     $hint = $Request.Hint
     if ($Request.Stage -eq 'resolve') {
         $windows = @(Get-DesktopWindows $monitor)
-        if ($windows.Count -eq 0) { throw 'No visible ChatGPT/Codex window found.' }
+        if ($windows.Count -eq 0) {
+            # The desktop process can briefly lose its top-level HWND while an
+            # error view is being rendered or the app is restoring its window.
+            # Keep the UI lease alive and poll until the configured UI deadline
+            # instead of recording a false retry failure on the first miss.
+            if ($Request.UiDeadline -eq [datetime]::MinValue -or $Now -lt $Request.UiDeadline) {
+                $Request.ReadyAt = $Now.AddMilliseconds(500)
+                return 'Pending'
+            }
+            throw 'No visible ChatGPT/Codex window found.'
+        }
         $matches = @()
         foreach ($window in $windows) {
             $snapshot = @(Read-DesktopSnapshot $window $monitor)
