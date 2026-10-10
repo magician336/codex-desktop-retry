@@ -65,6 +65,10 @@ function New-RolloutCursor([string] $Path, [bool] $Baseline, $Monitor = $null) {
 function Test-RetryRolloutPath($Monitor, [string] $Path) {
     if (-not $Path -or [IO.Directory]::Exists($Path)) { return $false }
     $full = [IO.Path]::GetFullPath($Path)
+    # Archived rollouts are historical records and have no visible desktop
+    # session to retry. Watching them creates a large backlog that can starve
+    # the current session's capacity request.
+    if ($full -match '(?i)\\archived_sessions\\') { return $false }
     # LogRoot also contains session_index.jsonl, sandbox logs, and other JSONL
     # files that may mention capacity in a title or diagnostic. Only rollout
     # streams carry turn-scoped events that can safely trigger a retry.
@@ -134,7 +138,9 @@ function Update-RetryLogCache($Monitor, [datetime] $Now, [switch] $Force) {
             if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
             try {
                 # Full discovery is startup/periodic reconciliation only; normal changes arrive from watchers.
-                foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction Stop) {
+                $scanRoot = Join-Path $root 'sessions'
+                if (-not (Test-Path -LiteralPath $scanRoot -PathType Container)) { $scanRoot = $root }
+                foreach ($file in Get-ChildItem -LiteralPath $scanRoot -Recurse -File -ErrorAction Stop) {
                     if (-not (Test-RetryRolloutPath $Monitor $file.FullName)) { continue }
                     $full = [IO.Path]::GetFullPath($file.FullName); $found[$full] = $true
                     Add-RetryLogCursor $Monitor $full $baseline
