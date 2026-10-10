@@ -135,7 +135,14 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
     $leaseSeconds = if ($Monitor.Options.ContainsKey('UiLeaseSeconds')) { [int]$Monitor.Options.UiLeaseSeconds } else { 5 }
     if ($Monitor.UiOwner -and ($Now - $Monitor.UiLeaseStarted).TotalSeconds -ge $leaseSeconds) {
         $ownerKey = $Monitor.UiOwner
-        if ($Monitor.Sessions.ContainsKey($ownerKey) -and $Monitor.Sessions[$ownerKey].Active) {
+        # Do not interrupt a lone request. A full UI Automation snapshot can
+        # take longer than the lease on a large Electron tree; yielding with no
+        # competing session makes that request restart forever.
+        $otherWork = @($Monitor.Sessions.Keys | Where-Object {
+            $_ -ne $ownerKey -and $Monitor.Sessions[$_].Active -and
+            $Monitor.Sessions[$_].Phase -eq 'waiting'
+        }).Count -gt 0
+        if ($otherWork -and $Monitor.Sessions.ContainsKey($ownerKey) -and $Monitor.Sessions[$ownerKey].Active) {
             $ownerState = $Monitor.Sessions[$ownerKey]
             # Yield ownership without discarding UI progress. Re-resolving from
             # scratch on every 5-second lease caused search-input/results stages
