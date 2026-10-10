@@ -1,7 +1,7 @@
 const state={status:null,settings:null,view:'overview',sessionFilter:'all'};
 const $=s=>document.querySelector(s); const $$=s=>[...document.querySelectorAll(s)];
-const eventNames={started:'监控器启动',paused:'监控器暂停',resumed:'监控器恢复','capacity-detected':'检测到容量错误','retry-clicked':'已点击重试','retry-invoked':'已触发重试','retry-confirmed':'重试成功','retry-failed':'重试失败','retry-unconfirmed':'确认超时','limit-reached':'达到重试上限','retry-candidate':'发现候选 turn','ui-yield':'UI 租约让出'};
-const eventKind=e=>e==='retry-confirmed'||e==='started'||e==='resumed'?'good':e.includes('failed')||e.includes('unconfirmed')||e==='limit-reached'?'bad':e.includes('capacity')?'warn':'';
+const eventNames={started:'监控器启动',paused:'监控器暂停',resumed:'监控器恢复','capacity-detected':'检测到容量错误','retry-clicked':'已点击重试','retry-invoked':'已触发重试','retry-confirmed':'重试成功','retry-manual-resolved':'人工已恢复','retry-failed':'重试失败','retry-unconfirmed':'确认超时','limit-reached':'达到重试上限','retry-candidate':'发现候选 turn','ui-yield':'UI 租约让出'};
+const eventKind=e=>e==='retry-confirmed'||e==='retry-manual-resolved'||e==='started'||e==='resumed'?'good':e.includes('failed')||e.includes('unconfirmed')||e==='limit-reached'?'bad':e.includes('capacity')?'warn':'';
 const fmtTime=v=>{if(!v)return'—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})};
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 async function json(url,options){const r=await fetch(url,options);if(!r.ok)throw new Error(await r.text());return r.json()}

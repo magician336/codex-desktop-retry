@@ -61,18 +61,23 @@ function Update-RetryConfirmation($Monitor, $Record, [datetime] $Now) {
         $state = $Monitor.Sessions[$key]
         $request = $state.Active
         if (-not $request -or $Record.Path -ne $request.Hint.SourcePath) { continue }
+        $confirming = $state.Phase -eq 'confirming'
+        $manualPending = $state.Phase -in @('waiting', 'navigating')
+        if (-not ($confirming -or $manualPending)) { continue }
+        $baseline = if ($confirming) { $request.Boundary } else { $request.Hint.ErrorOffset }
+        if ($Record.EndOffset -le $baseline) { continue }
         $same = $event.TurnId -and ($event.TurnId -eq $request.Hint.TurnId -or $request.LinkedTurns.ContainsKey($event.TurnId))
         $linkedNewTurn = $false
-        if ($state.Phase -eq 'confirming' -and $Record.EndOffset -gt $request.Boundary -and
+        if ($confirming -and
             $event.TurnId -and ($event.ParentTurnId -eq $request.Hint.TurnId -or $event.RootTurnId -eq $request.Hint.TurnId)) {
             $request.LinkedTurns[$event.TurnId] = $true; $same = $true
         }
-        if ($state.Phase -eq 'confirming' -and $Record.EndOffset -gt $request.Boundary -and
+        if (($confirming -or $manualPending) -and
             $event.TurnId -and -not $same -and $event.Kind -in @('task_started', 'turn_started', 'turn_context')) {
             if (-not $request.CandidateTurnId) {
                 $request.CandidateTurnId = $event.TurnId
                 $request.LinkedTurns[$event.TurnId] = $true
-                Write-RetryState $Monitor 'retry-candidate' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId; observedTurn = $event.TurnId; association = 'post-click-new-turn' }
+                Write-RetryState $Monitor 'retry-candidate' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId; observedTurn = $event.TurnId; association = if ($confirming) { 'post-click-new-turn' } else { 'post-capacity-manual-turn' } }
             }
             if ($event.TurnId -eq $request.CandidateTurnId) {
                 $same = $true
@@ -83,17 +88,15 @@ function Update-RetryConfirmation($Monitor, $Record, [datetime] $Now) {
             # produces its own context and output/completion.
         }
         if ($event.Kind -in @('task_started', 'turn_started') -and $event.TurnId -and -not $same) {
-            if ($state.Phase -eq 'confirming' -and $Record.EndOffset -gt $request.Boundary) {
+            if ($confirming) {
                 # A second unlinked turn is unrelated until it matches the candidate.
                 continue
             }
-            # A user may start another turn while the capacity error is still
-            # waiting for UI actuation. That new turn does not invalidate the
-            # failed turn's Retry control, so keep the request queued. Turns
-            # created after a click are handled by the confirming branch above.
-            continue
+            # A completed post-error turn is evidence that the user manually
+            # recovered the conversation. Candidate tracking below requires
+            # context plus output/completion before it closes the request.
         }
-        if ($state.Phase -ne 'confirming' -or $Record.EndOffset -le $request.Boundary -or -not $same) { continue }
+        if (-not $same) { continue }
         if (Get-RetryFailure $event) { continue }
         if ($event.Kind -eq 'turn_context' -and $event.TurnId -eq $request.CandidateTurnId) { $request.CandidateContext = $true }
         if ($event.Kind -in @('task_started', 'turn_started', 'retry_started') -and -not $linkedNewTurn) {
@@ -110,6 +113,12 @@ function Update-RetryConfirmation($Monitor, $Record, [datetime] $Now) {
             $request.CandidateContext -and $request.CandidateOutput
         $matchingTurnReady = $event.TurnId -ne $request.CandidateTurnId -and ($complete -or $output)
         if ($candidateReady -or $matchingTurnReady) {
+            if ($manualPending) {
+                Write-RetryState $Monitor 'retry-manual-resolved' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId; observedTurn = $event.TurnId; confirmedType = $event.Kind }
+                $state.RetryCount = 0; $state.Active = $null; $state.Phase = 'observing'
+                if ($Monitor.UiOwner -eq $key) { $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue }
+                continue
+            }
             $state.Phase = 'confirmed'
             Write-RetryState $Monitor 'retry-confirmed' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId; observedTurn = $event.TurnId; confirmedType = $event.Kind; association = if ($request.CandidateTurnId) { 'post-click-new-turn' } else { 'matching-turn' } }
             $state.RetryCount = 0; $state.Active = $null

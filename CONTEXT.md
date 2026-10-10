@@ -14,6 +14,7 @@ The project is a local Windows operator console for the Codex Desktop retry moni
 - **Attempt**: One verified Retry control invocation associated with a capacity error.
 - **Success**: A verified Retry click recorded as `retry-clicked`; the dashboard counts one click as one success.
 - **Failure**: A `retry-failed` or `limit-reached` event retained in the state history. A later capacity response is a new capacity event, not a failure of the prior click.
+- **Manual recovery**: A post-capacity turn with context and successful output/completion, recorded as `retry-manual-resolved`; it clears the pending retry without counting a tool click.
 - **Retained history**: The active state JSONL plus its configured rotated files. The console reports this boundary explicitly.
 
 ## User-facing invariants

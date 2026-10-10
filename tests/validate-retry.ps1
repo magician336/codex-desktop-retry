@@ -79,6 +79,7 @@ try {
     Assert ($uiText -notmatch '::LegacyIAccessiblePattern') 'Unsupported LegacyIAccessiblePattern type reference remains.'
     Assert ($uiText -match 'ScrollPattern') 'Retry UI does not expose scroll-container handling.'
     Assert ($uiText -match 'Invoke-UiScrollForRetry') 'Retry UI does not scroll when the control is below the viewport.'
+    Assert ($null -ne ('Windows.Automation.AutomationElement' -as [type])) 'UIAutomation assembly was not loaded for isolated UI steps.'
     $adapter = [pscustomobject]@{}
     Add-Member -InputObject $adapter -MemberType ScriptMethod -Name Step -Value { param($Request, [datetime] $Now) 'Clicked' }
     $monitor2 = New-RetryMonitor $options
@@ -93,6 +94,19 @@ try {
     Invoke-RetryMonitorTick $monitor3 $adapter (Get-Date)
     $state3 = $monitor3.Sessions['session-a']
     Assert ($state3.Phase -eq 'observing' -and -not $state3.Active) 'A repeated capacity error did not produce an independent click attempt.'
+    $manualOptions = @{}; foreach ($entry in $options.GetEnumerator()) { $manualOptions[$entry.Key] = $entry.Value }
+    $manualOptions.StatePath = Join-Path $temp 'manual-state.jsonl'
+    $manual = New-RetryMonitor $manualOptions
+    $manualHint = [pscustomobject]@{ SessionId = 'session-a'; TurnId = 'manual-failed'; SourcePath = $rollout; ErrorOffset = 1; Title = 'Target' }
+    $manualState = Get-RetrySessionState $manual 'session-a'
+    $manualState.Active = New-RetryRequest $manualHint (Get-Date); $manualState.Phase = 'navigating'
+    $startManual = '{"type":"event_msg","payload":{"type":"task_started","turn_id":"manual-success"}}' | ConvertFrom-Json
+    Update-RetryConfirmation $manual ([pscustomobject]@{ Path = $rollout; EndOffset = 2; Event = (Get-RetryEvent $startManual) }) (Get-Date)
+    $contextManual = '{"type":"turn_context","payload":{"turn_id":"manual-success"}}' | ConvertFrom-Json
+    Update-RetryConfirmation $manual ([pscustomobject]@{ Path = $rollout; EndOffset = 3; Event = (Get-RetryEvent $contextManual) }) (Get-Date)
+    $completeManual = '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"manual-success"}}' | ConvertFrom-Json
+    Update-RetryConfirmation $manual ([pscustomobject]@{ Path = $rollout; EndOffset = 4; Event = (Get-RetryEvent $completeManual) }) (Get-Date)
+    Assert ($manualState.Phase -eq 'observing' -and -not $manualState.Active) 'Manual completion did not clear the pending retry.'
     $leaseOptions = @{}; foreach ($entry in $options.GetEnumerator()) { $leaseOptions[$entry.Key] = $entry.Value }
     $leaseOptions.StatePath = Join-Path $temp 'lease-state.jsonl'
     $leaseOptions.UiLeaseSeconds = 1
@@ -116,6 +130,7 @@ try {
     Dispose-RetryLogWatchers $monitor2
     Dispose-RetryLogWatchers $monitor3
     Dispose-RetryLogWatchers $monitor4
+    Dispose-RetryLogWatchers $manual
     Write-Output 'PASS validate-retry'
 } finally {
     if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force }

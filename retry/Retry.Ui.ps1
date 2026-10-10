@@ -1,6 +1,9 @@
 # Desktop adapter: session resolver -> navigation -> retry actuator.
+# The isolated worker can enter at verify/actuate with an existing window, so
+# it must load UIAutomation before any typed AutomationElement reference runs.
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+
 function Get-DesktopWindows($Monitor) {
-    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     # PowerShell's -Name binding behaves differently across versions when given
     # an array. Enumerate each configured name explicitly and de-duplicate the
     # handles; Electron can expose several renderer processes for one window.
