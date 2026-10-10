@@ -86,12 +86,12 @@ function Update-RetryConfirmation($Monitor, $Record, [datetime] $Now) {
             if ($state.Phase -eq 'confirming' -and $Record.EndOffset -gt $request.Boundary) {
                 # A second unlinked turn is unrelated until it matches the candidate.
                 continue
-            } else {
-                $request.Superseded = $true
-                Write-RetryState $Monitor 'retry-superseded' $request.Hint.SourcePath $key @{ turn = $request.Hint.TurnId }
-                $state.Active = $null; $state.Phase = 'observing'
-                if ($Monitor.UiOwner -eq $key) { $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue }
             }
+            # A user may start another turn while the capacity error is still
+            # waiting for UI actuation. That new turn does not invalidate the
+            # failed turn's Retry control, so keep the request queued. Turns
+            # created after a click are handled by the confirming branch above.
+            continue
         }
         if ($state.Phase -ne 'confirming' -or $Record.EndOffset -le $request.Boundary -or -not $same) { continue }
         if (Get-RetryFailure $event) { continue }
