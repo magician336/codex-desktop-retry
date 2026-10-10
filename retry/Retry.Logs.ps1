@@ -139,7 +139,13 @@ function Update-RetryLogCache($Monitor, [datetime] $Now, [switch] $Force) {
             try {
                 # Full discovery is startup/periodic reconciliation only; normal changes arrive from watchers.
                 $scanRoot = Join-Path $root 'sessions'
-                if (-not (Test-Path -LiteralPath $scanRoot -PathType Container)) { $scanRoot = $root }
+                if (Test-Path -LiteralPath $scanRoot -PathType Container) {
+                    # Only today's rollouts can become a current desktop retry.
+                    # Historical session trees are immutable workload and make
+                    # startup reconciliation starve the live watcher.
+                    $todayRoot = Join-Path $scanRoot ((Get-Date).ToString('yyyy\\MM\\dd'))
+                    if (Test-Path -LiteralPath $todayRoot -PathType Container) { $scanRoot = $todayRoot }
+                } else { $scanRoot = $root }
                 foreach ($file in Get-ChildItem -LiteralPath $scanRoot -Recurse -File -ErrorAction Stop) {
                     if (-not (Test-RetryRolloutPath $Monitor $file.FullName)) { continue }
                     $full = [IO.Path]::GetFullPath($file.FullName); $found[$full] = $true
