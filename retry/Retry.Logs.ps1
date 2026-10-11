@@ -144,7 +144,11 @@ function Update-RetryLogCache($Monitor, [datetime] $Now, [switch] $Force) {
                     # Historical session trees are immutable workload and make
                     # startup reconciliation starve the live watcher.
                     $todayRoot = Join-Path $scanRoot ((Get-Date).ToString('yyyy\\MM\\dd'))
-                    if (Test-Path -LiteralPath $todayRoot -PathType Container) { $scanRoot = $todayRoot }
+                    # Around midnight the new date directory may not exist yet.
+                    # Do not fall back to the entire sessions tree, otherwise a
+                    # periodic rescan replays every historical rollout from byte 0.
+                    if (-not (Test-Path -LiteralPath $todayRoot -PathType Container)) { continue }
+                    $scanRoot = $todayRoot
                 } else { $scanRoot = $root }
                 foreach ($file in Get-ChildItem -LiteralPath $scanRoot -Recurse -File -ErrorAction Stop) {
                     if (-not (Test-RetryRolloutPath $Monitor $file.FullName)) { continue }

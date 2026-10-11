@@ -19,6 +19,15 @@ function Get-DesktopWindows($Monitor) {
     }
 }
 
+function Get-RetryUiTypeName($ControlType) {
+    if ($null -eq $ControlType) { return '' }
+    try {
+        $programmatic = [string]$ControlType.ProgrammaticName
+        if ($programmatic -match '^ControlType\.(.+)$') { return $Matches[1] }
+        return $programmatic
+    } catch { return '' }
+}
+
 function Read-DesktopSnapshot($Window, $Monitor) {
     $root = [Windows.Automation.AutomationElement]::FromHandle($Window.Handle)
     # FindAll can block inside the Electron accessibility provider while a
@@ -51,21 +60,27 @@ function Read-DesktopSnapshot($Window, $Monitor) {
         }
         try {
             $current = $element.Current
+            if ($null -eq $current) { continue }
             $sidebar = $current.ClassName -match 'sidebar-item|sidebar-row|folder-row|group/cwd'
             $searchRegion = $false
             $ancestor = $element
             for ($depth = 0; $depth -lt 20; $depth++) {
-                $ancestor = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($ancestor)
+                try { $ancestor = [Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($ancestor) } catch { break }
                 if (-not $ancestor) { break }
-                $class = [string]$ancestor.Current.ClassName
+                try { $ancestorCurrent = $ancestor.Current } catch { break }
+                if ($null -eq $ancestorCurrent) { break }
+                $class = [string]$ancestorCurrent.ClassName
                 if ($class -match 'sidebar-item|sidebar-row|folder-row|app-shell-left-panel') { $sidebar = $true }
-                if ($class -match 'dialog|search-results|search-result|search-modal' -or
-                    $ancestor.Current.ControlType -eq [Windows.Automation.ControlType]::Window -and $ancestor.Current.Name -match '(?i)search|搜索') { $searchRegion = $true }
-                if ($ancestor.Current.ControlType -eq [Windows.Automation.ControlType]::Document) { break }
+                $ancestorType = Get-RetryUiTypeName $ancestorCurrent.ControlType
+                if ($class -match 'dialog|command-menu|search-results|search-result|search-modal' -or
+                    ($ancestorType -eq 'Window' -and [string]$ancestorCurrent.Name -match '(?i)search|搜索|命令菜单')) { $searchRegion = $true }
+                if ($ancestorType -eq 'Document') { break }
             }
+            $type = Get-RetryUiTypeName $current.ControlType
+            if ($type -eq 'ComboBox' -and [string]$current.Name -match '(?i)search|搜索|命令菜单') { $searchRegion = $true }
             [pscustomobject]@{
                 Element = $element; Name = [string]$current.Name; Id = [string]$current.AutomationId
-                Class = [string]$current.ClassName; Type = $current.ControlType.ProgrammaticName.Replace('ControlType.', '')
+                Class = [string]$current.ClassName; Type = $type
                 Enabled = $current.IsEnabled; Visible = -not $current.IsOffscreen
                 Sidebar = $sidebar; SearchRegion = $searchRegion
             }
@@ -84,7 +99,13 @@ function Test-UiSessionMatch($Node, $Hint, $Monitor) {
     $expected = [regex]::Replace([string]$Hint.Title, '\s+', ' ').Trim()
     $actual = [regex]::Replace([string]$Node.Name, '\s+', ' ').Trim()
     $prefix = if ($expected.Length -ge 8) { $expected.Substring(0, [Math]::Min(32, $expected.Length)) } else { '' }
-    if ($actual -cne $expected -and (-not $prefix -or -not $actual.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))) { return $false }
+    $actualVariants = @($actual)
+    $withoutStatus = [regex]::Replace($actual, '(?i)^(处理中|正在处理|运行中|等待中|已完成|完成|失败|queued|running|working|completed|failed)\s+', '')
+    if ($withoutStatus -ne $actual) { $actualVariants += $withoutStatus }
+    $titleMatch = @($actualVariants | Where-Object {
+        $_ -ceq $expected -or ($prefix -and $_.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+    }).Count -gt 0
+    if (-not $titleMatch) { return $false }
     # Reject identical titles belonging to different sessions instead of picking the first.
     $duplicates = @($Monitor.Titles.Keys | Where-Object { $Monitor.Titles[$_] -ceq $Hint.Title -and $_ -ne $Hint.SessionId })
     return $duplicates.Count -eq 0
@@ -143,7 +164,12 @@ function Set-UiSearchValue($Node, [string] $Text, $Monitor) {
     try {
         $pattern = [Windows.Automation.ValuePattern]$Node.Element.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
         $pattern.SetValue($Text)
-        if ($pattern.Current.Value -cne $Text) { throw 'Search input readback does not equal the requested value.' }
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        do {
+            if ([string]$pattern.Current.Value -ceq $Text) { return }
+            Start-Sleep -Milliseconds 50
+        } while ($clock.ElapsedMilliseconds -lt 2000)
+        throw 'Search input readback does not equal the requested value before timeout.'
     } catch { Write-RetryDiagnostic $Monitor 'search-value' $Node.Name $_.Exception; throw }
 }
 
@@ -167,8 +193,9 @@ function Invoke-UiScrollForRetry($Snapshot, $Monitor) {
         for ($depth = 0; $depth -lt 20 -and $element; $depth++) {
             try {
                 $current = $element.Current
+                if ($null -eq $current) { break }
                 if ($current.ClassName -match 'sidebar-item|sidebar-row|folder-row|app-shell-left-panel') { break }
-                $controlType = $current.ControlType.ProgrammaticName.Replace('ControlType.', '')
+                $controlType = Get-RetryUiTypeName $current.ControlType
                 if ($controlType -in @('Document', 'Pane', 'Group', 'Custom')) {
                     try {
                         $scroll = [Windows.Automation.ScrollPattern]$element.GetCurrentPattern([Windows.Automation.ScrollPattern]::Pattern)
@@ -299,25 +326,21 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
             }
             throw 'No visible ChatGPT/Codex window found.'
         }
-        $matches = @()
+        $activeWindows = @()
+        $singleWindowSnapshot = $null
         foreach ($window in $windows) {
             $snapshot = @(Read-DesktopSnapshot $window $monitor)
-            $active = Test-ActiveSession $snapshot $hint $monitor
-            $target = if ($active) { $null } else { Find-SessionTarget $snapshot $hint $monitor }
-            if ($target -or $active) { $matches += [pscustomobject]@{ Window = $window; Target = $target; Active = $active } }
+            if ($windows.Count -eq 1) { $singleWindowSnapshot = $snapshot }
+            if (Test-ActiveSession $snapshot $hint $monitor) { $activeWindows += $window }
         }
-        if ($matches.Count -gt 1) { throw 'Target session is visible in multiple desktop windows.' }
-        if ($matches.Count -eq 1) {
-            $Request.Window = $matches[0].Window
-            if ($matches[0].Target) {
-                if (-not (Invoke-UiNode $matches[0].Target $monitor 'navigation' $true)) { throw 'Session navigation failed.' }
-                $Request.ReadyAt = $Now.AddMilliseconds(500)
-            }
+        if ($activeWindows.Count -gt 1) { throw 'Target session is active in multiple desktop windows.' }
+        if ($activeWindows.Count -eq 1) {
+            $Request.Window = $activeWindows[0]
             $Request.Stage = 'verify'; return 'Pending'
         }
         if ($windows.Count -ne 1) { throw 'Cannot choose a desktop window for session search.' }
         $Request.Window = $windows[0]
-        $snapshot = @(Read-DesktopSnapshot $Request.Window $monitor)
+        $snapshot = $singleWindowSnapshot
         $search = @($snapshot | Where-Object { $_.Visible -and $_.Enabled -and $_.Type -eq 'Button' -and $_.Name -match '^(Search|搜索)$' })
         if ($search.Count -ne 1 -or -not (Invoke-UiNode $search[0] $monitor 'search-open')) { throw 'Cannot open an unambiguous session search.' }
         $Request.Stage = 'search-input'; $Request.ReadyAt = $Now.AddMilliseconds(300); return 'Pending'
@@ -325,8 +348,18 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
     $snapshot = @(Read-DesktopSnapshot $Request.Window $monitor)
     switch ($Request.Stage) {
         'search-input' {
-            $edits = @($snapshot | Where-Object { $_.Visible -and $_.Enabled -and $_.Type -eq 'Edit' -and ($_.SearchRegion -or $_.Name -match '(?i)search|搜索') })
-            if ($edits.Count -ne 1) { throw 'Search edit is missing or ambiguous.' }
+            $edits = @($snapshot | Where-Object {
+                $_.Visible -and $_.Enabled -and $_.Type -in @('Edit', 'ComboBox') -and
+                ($_.SearchRegion -or $_.Name -match '(?i)search|搜索|命令菜单')
+            })
+            if ($edits.Count -eq 0) {
+                if ($Request.UiDeadline -eq [datetime]::MinValue -or $Now -lt $Request.UiDeadline) {
+                    $Request.ReadyAt = $Now.AddMilliseconds(300)
+                    return 'Pending'
+                }
+                throw 'Search edit is missing or ambiguous.'
+            }
+            if ($edits.Count -gt 1) { throw 'Search edit is missing or ambiguous.' }
             $text = if ($hint.Title) { $hint.Title } else { $hint.SessionId }
             Set-UiSearchValue $edits[0] $text $monitor
             $Request.SearchText = $text; $Request.Stage = 'search-results'; $Request.ReadyAt = $Now.AddMilliseconds(600)
@@ -385,7 +418,7 @@ function Invoke-DesktopRetryStepIsolated($Monitor, $Request, [datetime] $Now) {
             TurnId = [string]$Request.Hint.TurnId; Title = [string]$Request.Hint.Title
             SourcePath = [string]$Request.Hint.SourcePath
         }
-        Stage = [string]$Request.Stage; ReadyAt = $Request.ReadyAt.ToString('o')
+        Stage = [string]$Request.Stage; ReadyAt = $Request.ReadyAt.ToString('o'); UiDeadline = $Request.UiDeadline.ToString('o')
         SearchText = [string]$Request.SearchText; WindowHandle = $windowHandle; WindowProcessId = $windowProcessId
         ActiveTurns = $activeTurns; Titles = $titleRows
     }
@@ -411,7 +444,7 @@ function Invoke-DesktopRetryStepIsolated($Monitor, $Request, [datetime] $Now) {
             }
             $request = [pscustomobject]@{
                 Hint = $hint; Stage = [string]$payload.Stage; ReadyAt = [datetime]$payload.ReadyAt
-                UiDeadline = [datetime]::MinValue; ConfirmDeadline = [datetime]::MinValue
+                UiDeadline = [datetime]$payload.UiDeadline; ConfirmDeadline = [datetime]::MinValue
                 Boundary = [int64]::MaxValue; LinkedTurns = @{}; Window = $null; Target = $null
                 SearchText = [string]$payload.SearchText; Started = $false; CandidateTurnId = ''
                 CandidateContext = $false; CandidateOutput = $false; Superseded = $false; AttemptCounted = $true
