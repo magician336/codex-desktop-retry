@@ -14,7 +14,6 @@ param(
     [int64] $StateMaxBytes = 1048576,
     [int] $StateMaxFiles = 3,
     [switch] $AllowNativeClick,
-    [switch] $DisableNativeClick,
     [string] $StatePath = (Join-Path $PSScriptRoot 'retry-state.json'),
     [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log'),
     [string] $ControlPath = (Join-Path $PSScriptRoot 'retry-control.json'),
@@ -81,7 +80,7 @@ $options = @{
     UiLeaseSeconds = $UiLeaseSeconds; UiSnapshotMaxMilliseconds = $UiSnapshotMaxMilliseconds
     RescanSeconds = $RescanSeconds
     StateMaxBytes = $StateMaxBytes; StateMaxFiles = $StateMaxFiles
-    AllowNativeClick = (-not $DisableNativeClick.IsPresent) -or $AllowNativeClick.IsPresent; StatePath = $StatePath
+    AllowNativeClick = $AllowNativeClick.IsPresent; StatePath = $StatePath
     UiDiagnosticPath = $UiDiagnosticPath; ControlPath = $ControlPath
 }
 $monitor = New-RetryMonitor $options

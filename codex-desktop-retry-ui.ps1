@@ -62,7 +62,7 @@ function Get-DefaultSettings {
         processName = @('ChatGPT', 'Codex', 'OpenAI.Codex')
         maxRetries = 0; backoffSeconds = @(0); pollSeconds = 0.25
         cooldownSeconds = 20; retryUiWaitSeconds = 90; retryConfirmSeconds = 30
-        uiLeaseSeconds = 5; rescanSeconds = 60; allowNativeClick = $true
+        uiLeaseSeconds = 5; rescanSeconds = 60; allowNativeClick = $false
     }
 }
 
@@ -145,7 +145,6 @@ function Start-Monitor {
         @('-StatePath', $StatePath), @('-UiDiagnosticPath', $UiDiagnosticPath), @('-ControlPath', $ControlPath), @('-RuntimePath', $runtimePath)
     )) { [void]$argList.Add([string]$pair[0]); [void]$argList.Add([string]$pair[1]) }
     if ([bool]$settings.allowNativeClick) { [void]$argList.Add('-AllowNativeClick') }
-    else { [void]$argList.Add('-DisableNativeClick') }
     $args = @($argList.ToArray())
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = Get-PwshPath

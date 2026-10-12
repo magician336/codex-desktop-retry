@@ -99,18 +99,17 @@ retry-clicked / retry-failed
 | `-RetryConfirmSeconds` | `30` | 兼容旧配置保留；当前不等待恢复事件 |
 | `-UiLeaseSeconds` | `5` | 多会话共享桌面 UI 时的单次租约 |
 | `-RescanSeconds` | `60` | 兜底重扫间隔，至少 10 秒 |
-| `-AllowNativeClick` | 开启 | 显式允许前台桌面鼠标回退 |
-| `-DisableNativeClick` | 关闭 | 禁用前台桌面鼠标回退 |
+| `-AllowNativeClick` | 关闭 | 显式允许前台桌面鼠标回退 |
 
-### 发布版默认打开鼠标模拟点击
+### 发布版默认关闭鼠标模拟点击
 
-原生鼠标回退是当前正常运行所需路径，发布版和 Web UI 新配置默认开启。请确认 Web UI 的“允许原生鼠标回退”保持勾选；如果已有配置曾关闭它，保存设置后重启监控器。
+原生鼠标回退默认关闭。只有确认 UI Automation 无法完成操作时，才在设置中打开该选项。
 
 - Web UI：进入“设置”，勾选“允许原生鼠标回退”，点击“保存并重启”。
-- 直接运行冻结版：默认已开启；也可以在命令后追加 `-AllowNativeClick` 明确声明。
+- 直接运行冻结版：在命令后追加 `-AllowNativeClick`。
 
 ```powershell
-.\releases\2026-10-12\codex-desktop-retry.ps1
+.\releases\2026-10-12\codex-desktop-retry.ps1 -AllowNativeClick
 ```
 
 原生鼠标回退只在 UI Automation 找不到可操作控件时使用，因此必须保持 Codex Desktop 窗口可见，并使用交互式前台桌面。
