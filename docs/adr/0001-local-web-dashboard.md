@@ -6,7 +6,7 @@ Accepted
 
 ## Decision
 
-Add a PowerShell-hosted local Web console. The host serves static HTML/CSS/JavaScript through `HttpListener`, starts the existing monitor as a child process, exposes JSON endpoints for status and settings, and stores pause state in a local control file. The monitor keeps ownership of UI Automation and retry semantics.
+Add a PowerShell-hosted local Web console. The host serves static HTML/CSS/JavaScript through `HttpListener`, attaches to the unique existing monitor or starts it when absent, exposes JSON endpoints for status and settings, and stores pause state in a local control file. The monitor keeps ownership of UI Automation and retry semantics.
 
 ## Why
 
@@ -17,4 +17,5 @@ The existing product is a Windows PowerShell monitor with no frontend runtime. A
 - The console is reachable only on loopback by default.
 - Statistics are reconstructed from the active and rotated state JSONL files, so the UI reports the retained-history boundary.
 - Pausing is cooperative: the monitor process stays alive and checks `retry-control.json` before each tick.
-- Settings changes restart the monitor child so all parameters take effect consistently.
+- Settings changes restart the active monitor so all parameters take effect consistently.
+- Both entry points use the same per-log-root mutex and `*.runtime.json` registration. The console can manage a monitor started directly from PowerShell without creating a second UI Automation owner.

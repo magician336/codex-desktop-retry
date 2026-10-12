@@ -166,7 +166,16 @@ function Update-RetryLogCache($Monitor, [datetime] $Now, [switch] $Force) {
     }
     $path = ''
     while ($Monitor.PendingPaths.TryDequeue([ref]$path)) {
-        if ([IO.File]::Exists($path)) { Add-RetryLogCursor $Monitor $path $false }
+        if ([IO.File]::Exists($path)) {
+            # FileSystemWatcher observes the whole log tree. A historical
+            # rollout can be touched after startup, but its old capacity
+            # records must not be replayed as fresh retry requests. Only a
+            # rollout under today's sessions directory may start at offset 0.
+            $today = (Get-Date).ToString('yyyy\\MM\\dd')
+            $todayMarker = [IO.Path]::DirectorySeparatorChar + 'sessions' + [IO.Path]::DirectorySeparatorChar + $today + [IO.Path]::DirectorySeparatorChar
+            $isToday = $path.IndexOf($todayMarker, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            Add-RetryLogCursor $Monitor $path (-not $isToday)
+        }
         elseif ($Monitor.Files.Contains([IO.Path]::GetFullPath($path))) { $Monitor.Files.Remove([IO.Path]::GetFullPath($path)) }
     }
 }

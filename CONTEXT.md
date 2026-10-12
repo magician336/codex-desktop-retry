@@ -16,6 +16,8 @@ The project is a local Windows operator console for the Codex Desktop retry moni
 - **Failure**: A `retry-failed` or `limit-reached` event retained in the state history. A later capacity response is a new capacity event, not a failure of the prior click.
 - **Manual recovery**: A post-capacity turn with context and successful output/completion, recorded as `retry-manual-resolved`; it clears the pending retry without counting a tool click.
 - **Retained history**: The active state JSONL plus its configured rotated files. The console reports this boundary explicitly.
+- **Process state**: The monitor's current lifecycle (`running`, `paused`, or `stopped`) and its process id; the console receives changes as a live signal.
+- **Runtime registration**: A local `*.runtime.json` record containing the active monitor pid and control/state paths. It lets either entry point attach to the same monitor; the named mutex remains the authoritative single-instance guard.
 
 ## User-facing invariants
 

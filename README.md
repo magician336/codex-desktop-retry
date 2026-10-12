@@ -23,7 +23,7 @@ Windows 上运行的 Codex Desktop 本地自动重试工具。它持续读取 Co
    .\codex-desktop-retry-ui.ps1
    ```
 
-3. 脚本会监听 `http://127.0.0.1:8765/`、自动打开浏览器，并自动启动后台监控器。若浏览器没有自动打开，手动访问该地址即可。
+3. 脚本会监听 `http://127.0.0.1:8765/`、自动打开浏览器，并连接到唯一的后台监控器；没有运行实例时才会启动一个。若浏览器没有自动打开，手动访问该地址即可。
 4. 在“监控概览”确认状态为“运行中”，再继续使用 Codex Desktop。需要停止时关闭控制台窗口；也可以在 UI 中暂停监控。
 
 控制台只绑定回环地址 `127.0.0.1`，默认不会暴露到局域网。端口被占用时可换端口：
@@ -99,7 +99,21 @@ retry-clicked / retry-failed
 | `-RetryConfirmSeconds` | `30` | 兼容旧配置保留；当前不等待恢复事件 |
 | `-UiLeaseSeconds` | `5` | 多会话共享桌面 UI 时的单次租约 |
 | `-RescanSeconds` | `60` | 兜底重扫间隔，至少 10 秒 |
-| `-AllowNativeClick` | 关闭 | 允许前台桌面鼠标回退 |
+| `-AllowNativeClick` | 开启 | 显式允许前台桌面鼠标回退 |
+| `-DisableNativeClick` | 关闭 | 禁用前台桌面鼠标回退 |
+
+### 发布版默认打开鼠标模拟点击
+
+原生鼠标回退是当前正常运行所需路径，发布版和 Web UI 新配置默认开启。请确认 Web UI 的“允许原生鼠标回退”保持勾选；如果已有配置曾关闭它，保存设置后重启监控器。
+
+- Web UI：进入“设置”，勾选“允许原生鼠标回退”，点击“保存并重启”。
+- 直接运行冻结版：默认已开启；也可以在命令后追加 `-AllowNativeClick` 明确声明。
+
+```powershell
+.\releases\2026-10-12\codex-desktop-retry.ps1
+```
+
+原生鼠标回退只在 UI Automation 找不到可操作控件时使用，因此必须保持 Codex Desktop 窗口可见，并使用交互式前台桌面。
 
 例如，指定日志目录并设置退避：
 
@@ -110,7 +124,7 @@ retry-clicked / retry-failed
   -MaxRetries 5
 ```
 
-仓库中的 `releases\2026-10-09\codex-desktop-retry.ps1` 是由 `scripts\build-stable.ps1` 生成的冻结版。日常开发和修复请使用根目录启动器；冻结版用于需要固定脚本内容的场景。
+仓库中的 `releases\2026-10-12\codex-desktop-retry.ps1` 是由 `scripts\build-stable.ps1` 生成的冻结版。日常开发和修复请使用根目录启动器；冻结版用于需要固定脚本内容的场景。
 
 ## 注意事项与排查
 
@@ -127,7 +141,7 @@ retry-clicked / retry-failed
   该命令只读检查，不会点击控件。
 - **日志不在默认目录**：在 UI“设置”修改日志目录，或通过 `-LogRoot` 显式指定；目录必须已经存在并能读取 rollout 文件。
 - **数据边界**：`retry-state.json` 会按大小轮转，UI 只能统计当前文件和轮转副本中的事件。不要手动编辑这些状态文件来“补成功”。
-- **重复启动**：UI 已经启动监控器时，不要再启动第二个同配置的根目录监控器，否则两个进程可能竞争同一桌面 UI。
+- **重复启动**：UI 和直接运行 `codex-desktop-retry.ps1` 使用同一个按日志根目录划分的实例锁，并通过同一状态路径下的运行时登记连接已有实例。重复启动会连接已有实例，不会再创建第二个监控器；关闭 UI 也不会终止由直接脚本启动的实例。
 - **社区项目**：本项目与 OpenAI、Codex Desktop 或 ChatGPT 官方无隶属关系。Codex Desktop UI、rollout 格式或按钮名称变化时，现有匹配逻辑可能需要更新。
 
 ## 项目结构
@@ -140,6 +154,7 @@ retry/Retry.Logs.ps1          # 日志发现与增量 JSONL 解析
 retry/Retry.State.ps1         # 会话状态与有界状态日志
 retry/Retry.Monitor.ps1       # 容量错误、确认与状态机
 retry/Retry.Ui.ps1            # 会话定位、导航与 Retry 控件调用
+retry/Retry.Runtime.ps1       # UI 与直接入口共享的监控器登记
 retry/Retry.Status.ps1        # UI 统计索引
 retry/Retry.Rollouts.ps1      # UI 侧实时会话索引
 tests/                        # 验证、启动和桌面检查脚本

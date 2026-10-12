@@ -151,7 +151,14 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
             $_ -ne $ownerKey -and $Monitor.Sessions[$_].Active -and
             $Monitor.Sessions[$_].Phase -eq 'waiting'
         }).Count -gt 0
-        if ($otherWork -and $Monitor.Sessions.ContainsKey($ownerKey) -and $Monitor.Sessions[$ownerKey].Active) {
+        $ownerRequest = if ($Monitor.Sessions.ContainsKey($ownerKey)) { $Monitor.Sessions[$ownerKey].Active } else { $null }
+        # Once a request has opened search, yielding the lease leaves its
+        # dialog in the desktop while another request rewrites the same search
+        # box. The original request then cannot click or verify its result.
+        # Only yield before navigation has touched the UI; failures inside a
+        # later stage release the lease through the normal deadline/error path.
+        $canYield = $ownerRequest -and [string]$ownerRequest.Stage -eq 'resolve'
+        if ($otherWork -and $canYield) {
             $ownerState = $Monitor.Sessions[$ownerKey]
             # Yield ownership without discarding UI progress. Re-resolving from
             # scratch on every 5-second lease caused search-input/results stages
@@ -160,8 +167,8 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
             # existing window and stage; the normal deadline still bounds it.
             $ownerState.Phase = 'waiting'; $ownerState.NextEligible = $Now
             Write-RetryState $Monitor 'ui-yield' $ownerState.Active.Hint.SourcePath $ownerKey @{ leaseSeconds = $leaseSeconds }
+            $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue
         }
-        $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue
     }
     foreach ($key in @($Monitor.Sessions.Keys)) {
         $state = $Monitor.Sessions[$key]
@@ -195,7 +202,9 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
             }
             if ($Now -lt $request.ReadyAt) { continue }
             $Monitor.UiOwner = $key; $Monitor.UiLeaseStarted = $Now; $state.Phase = 'navigating'; $state.LastAttempt = $Now
-            $request.UiDeadline = $Now.AddSeconds($Monitor.Options.RetryUiWaitSeconds)
+            if ($request.UiDeadline -eq [datetime]::MinValue) {
+                $request.UiDeadline = $Now.AddSeconds($Monitor.Options.RetryUiWaitSeconds)
+            }
             break
         }
     }
@@ -223,6 +232,7 @@ function Invoke-RetryMonitorTick($Monitor, $Adapter, [datetime] $Now) {
         Write-RetryState $Monitor 'retry-failed' $_.Exception.Message $key @{ turn = $request.Hint.TurnId; stage = $request.Stage }
         $state.Phase = 'waiting'; $state.NextEligible = $Now.AddSeconds([Math]::Max(1, $Monitor.Options.CooldownSeconds))
         $request.Stage = 'resolve'; $request.Window = $null; $request.AttemptCounted = $false
+        $request.UiDeadline = [datetime]::MinValue
         $Monitor.UiOwner = ''; $Monitor.UiLeaseStarted = [datetime]::MinValue
     }
 }

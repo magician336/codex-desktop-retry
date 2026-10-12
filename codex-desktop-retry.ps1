@@ -14,9 +14,11 @@ param(
     [int64] $StateMaxBytes = 1048576,
     [int] $StateMaxFiles = 3,
     [switch] $AllowNativeClick,
+    [switch] $DisableNativeClick,
     [string] $StatePath = (Join-Path $PSScriptRoot 'retry-state.json'),
     [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log'),
-    [string] $ControlPath = (Join-Path $PSScriptRoot 'retry-control.json')
+    [string] $ControlPath = (Join-Path $PSScriptRoot 'retry-control.json'),
+    [string] $RuntimePath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -38,6 +40,8 @@ if ($StateMaxFiles -lt 1) { throw 'StateMaxFiles must be at least 1.' }
 # -ProcessName arguments emitted by the UI launcher.
 $ProcessName = @($ProcessName | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 if ($ProcessName.Count -eq 0) { throw 'ProcessName must contain at least one process name.' }
+. (Join-Path $PSScriptRoot 'retry\Retry.Runtime.ps1')
+$RuntimePath = Get-RetryMonitorRuntimePath $StatePath $RuntimePath
 
 # Only one monitor may consume a given rollout root. Multiple UI consoles can
 # otherwise watch the same capacity event and race each other's UI leases,
@@ -51,7 +55,17 @@ $mutexName = "Local\CodexDesktopRetryMonitor-$rootHash"
 $mutexCreated = $false
 $monitorMutex = [Threading.Mutex]::new($false, $mutexName, [ref]$mutexCreated)
 if (-not $mutexCreated) {
+    $existing = Read-RetryMonitorRuntime $RuntimePath
     $monitorMutex.Dispose()
+    if ($existing -and [int]$existing.pid -gt 0) {
+        try {
+            $existingProcess = Get-Process -Id ([int]$existing.pid) -ErrorAction Stop
+            if (-not $existingProcess.HasExited) {
+                Write-Host "Codex Desktop retry monitor is already running (PID $($existing.pid)); using the existing instance." -ForegroundColor Yellow
+                exit 0
+            }
+        } catch { }
+    }
     Write-Error "A Codex Desktop retry monitor is already running for: $rootKey"
     exit 2
 }
@@ -67,16 +81,23 @@ $options = @{
     UiLeaseSeconds = $UiLeaseSeconds; UiSnapshotMaxMilliseconds = $UiSnapshotMaxMilliseconds
     RescanSeconds = $RescanSeconds
     StateMaxBytes = $StateMaxBytes; StateMaxFiles = $StateMaxFiles
-    AllowNativeClick = $AllowNativeClick.IsPresent; StatePath = $StatePath
+    AllowNativeClick = (-not $DisableNativeClick.IsPresent) -or $AllowNativeClick.IsPresent; StatePath = $StatePath
     UiDiagnosticPath = $UiDiagnosticPath; ControlPath = $ControlPath
 }
 $monitor = New-RetryMonitor $options
 $adapter = New-DesktopRetryAdapter $monitor
-Write-Host 'Codex Desktop retry monitor started. Press Ctrl+C to stop.' -ForegroundColor Cyan
-Write-Host "Watching: $($LogRoot -join ', ')" -ForegroundColor DarkCyan
-Write-RetryState $monitor 'started'
 $wasPaused = $false
+$runtimeRegistered = $false
 try {
+    Write-RetryMonitorRuntime $RuntimePath ([ordered]@{
+        pid = $PID; startedAt = [DateTimeOffset]::UtcNow.ToString('o'); scriptPath = [IO.Path]::GetFullPath($PSCommandPath)
+        statePath = [IO.Path]::GetFullPath($StatePath); controlPath = [IO.Path]::GetFullPath($ControlPath)
+        uiDiagnosticPath = [IO.Path]::GetFullPath($UiDiagnosticPath); logRoot = @($LogRoot); processName = @($ProcessName)
+    })
+    $runtimeRegistered = $true
+    Write-Host 'Codex Desktop retry monitor started. Press Ctrl+C to stop.' -ForegroundColor Cyan
+    Write-Host "Watching: $($LogRoot -join ', ')" -ForegroundColor DarkCyan
+    Write-RetryState $monitor 'started'
     while ($true) {
         $paused = $false
         if ($ControlPath -and (Test-Path -LiteralPath $ControlPath -PathType Leaf)) {
@@ -95,4 +116,7 @@ try {
         }
         Start-Sleep -Milliseconds ([Math]::Max(50, [int]($PollSeconds * 1000)))
     }
-} finally { $monitor.StateMutex.Dispose(); $monitorMutex.ReleaseMutex(); $monitorMutex.Dispose() }
+} finally {
+    if ($runtimeRegistered) { Remove-RetryMonitorRuntime $RuntimePath $PID }
+    $monitor.StateMutex.Dispose(); $monitorMutex.ReleaseMutex(); $monitorMutex.Dispose()
+}

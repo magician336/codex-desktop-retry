@@ -8,7 +8,7 @@ if ($ReleaseDate -notmatch '^\d{4}-\d{2}-\d{2}$') { throw 'ReleaseDate must use 
 $repo = Split-Path -Parent $PSScriptRoot
 $source = [IO.File]::ReadAllText((Join-Path $repo 'codex-desktop-retry.ps1'))
 $source = [regex]::Replace($source, '(?m)^\. \(Join-Path \$PSScriptRoot ''retry\\[^'']+''\)\r?\n', '')
-$modules = @('Retry.Logs.ps1', 'Retry.State.ps1', 'Retry.Ui.ps1', 'Retry.Monitor.ps1')
+$modules = @('Retry.Runtime.ps1', 'Retry.Logs.ps1', 'Retry.State.ps1', 'Retry.Ui.ps1', 'Retry.Monitor.ps1')
 $functions = ($modules | ForEach-Object { [IO.File]::ReadAllText((Join-Path $repo "retry\$_")) }) -join "`n"
 $insert = $source.IndexOf('$options =')
 if ($insert -lt 0) { throw 'Cannot locate launcher initialization.' }

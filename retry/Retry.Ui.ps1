@@ -3,6 +3,14 @@
 # it must load UIAutomation before any typed AutomationElement reference runs.
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 
+# The isolated UI worker loads this file without Retry.Monitor.ps1. Keep the
+# shared capacity classifier available for the reconnect-overlay fallback.
+if (-not (Get-Command Test-CapacityText -CommandType Function -ErrorAction SilentlyContinue)) {
+    function Test-CapacityText([string] $Text) {
+        $Text -match 'Selected model is at capacity|model[_ -]capacity[_ -]exceeded|server[_ -]?(?:is[_ -]?)?overloaded|currently overloaded|overloaded_error'
+    }
+}
+
 function Get-DesktopWindows($Monitor) {
     # PowerShell's -Name binding behaves differently across versions when given
     # an array. Enumerate each configured name explicitly and de-duplicate the
@@ -140,6 +148,12 @@ function Test-ActiveSession($Snapshot, $Hint, $Monitor) {
             $node.Type -eq 'Document' -and (Test-UiSessionMatch $node $Hint $Monitor)) { return $true }
     }
     return $false
+}
+
+function Test-UiSearchOpen($Snapshot) {
+    @($Snapshot | Where-Object {
+        $_.Visible -and $_.Type -eq 'Window' -and [string]$_.Name -match '(?i)search|搜索|命令菜单'
+    }).Count -gt 0
 }
 
 function Invoke-UiNode($Node, $Monitor, [string] $Stage, [bool] $Navigation = $false) {
@@ -341,6 +355,16 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
         if ($windows.Count -ne 1) { throw 'Cannot choose a desktop window for session search.' }
         $Request.Window = $windows[0]
         $snapshot = $singleWindowSnapshot
+        # A previous navigation attempt may have left the command menu open.
+        # Reuse that dialog instead of looking for a search button hidden behind
+        # the overlay; otherwise the request retries forever at resolve.
+        $openSearch = @($snapshot | Where-Object {
+            $_.Visible -and $_.Type -eq 'Window' -and [string]$_.Name -match '(?i)search|搜索|命令菜单'
+        })
+        if ($openSearch.Count -eq 1) {
+            $Request.Stage = 'search-input'; $Request.ReadyAt = $Now.AddMilliseconds(100); return 'Pending'
+        }
+        if ($openSearch.Count -gt 1) { throw 'Multiple session search dialogs are visible.' }
         $search = @($snapshot | Where-Object { $_.Visible -and $_.Enabled -and $_.Type -eq 'Button' -and $_.Name -match '^(Search|搜索)$' })
         if ($search.Count -ne 1 -or -not (Invoke-UiNode $search[0] $monitor 'search-open')) { throw 'Cannot open an unambiguous session search.' }
         $Request.Stage = 'search-input'; $Request.ReadyAt = $Now.AddMilliseconds(300); return 'Pending'
@@ -372,6 +396,13 @@ function Step-DesktopRetry($Adapter, $Request, [datetime] $Now) {
             $Request.Stage = 'verify'; $Request.ReadyAt = $Now.AddMilliseconds(500); return 'Pending'
         }
         'verify' {
+            # InvokePattern can succeed on a stale search result without
+            # dismissing the command menu. Rebind to the live result while the
+            # same request still owns the UI lease instead of waiting forever
+            # for a page change that cannot happen behind the overlay.
+            if (Test-UiSearchOpen $snapshot) {
+                $Request.Stage = 'search-input'; $Request.ReadyAt = $Now.AddMilliseconds(100); return 'Pending'
+            }
             if (-not (Test-ActiveSession $snapshot $hint $monitor)) { $Request.ReadyAt = $Now.AddMilliseconds(500); return 'Pending' }
             $Request.Stage = 'actuate'; return 'Pending'
         }

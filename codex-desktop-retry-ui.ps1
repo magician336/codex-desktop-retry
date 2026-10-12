@@ -5,7 +5,8 @@ param(
     [string] $ConfigPath = (Join-Path $PSScriptRoot 'retry-ui-settings.json'),
     [string] $StatePath = (Join-Path $PSScriptRoot 'retry-state.json'),
     [string] $ControlPath = (Join-Path $PSScriptRoot 'retry-control.json'),
-    [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log')
+    [string] $UiDiagnosticPath = (Join-Path $PSScriptRoot 'ui-controls.log'),
+    [string] $RuntimePath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -15,9 +16,34 @@ $webRoot = Join-Path $scriptRoot 'web'
 $monitorScript = Join-Path $scriptRoot 'codex-desktop-retry.ps1'
 $taskName = 'Codex Desktop Retry Monitor'
 $monitorProcess = $null
+$monitorOwned = $false
+$activeStatePath = $StatePath
+$activeControlPath = $ControlPath
+$activeUiDiagnosticPath = $UiDiagnosticPath
+$activeLogRoot = $null
+$runtimePath = ''
 $listener = [Net.HttpListener]::new()
+if (-not ('RetryHttpAccept' -as [type])) {
+    Add-Type @'
+using System;
+using System.Collections.Concurrent;
+using System.Net;
+public static class RetryHttpAccept {
+    public static readonly ConcurrentQueue<HttpListenerContext> Queue = new ConcurrentQueue<HttpListenerContext>();
+    public static void Accept(IAsyncResult result) {
+        var listener = (HttpListener)result.AsyncState;
+        try {
+            Queue.Enqueue(listener.EndGetContext(result));
+            if (listener.IsListening) listener.BeginGetContext(Accept, listener);
+        } catch { }
+    }
+}
+'@
+}
 . (Join-Path $PSScriptRoot 'retry\Retry.Status.ps1')
 . (Join-Path $PSScriptRoot 'retry\Retry.Rollouts.ps1')
+. (Join-Path $PSScriptRoot 'retry\Retry.Runtime.ps1')
+$runtimePath = Get-RetryMonitorRuntimePath $StatePath $RuntimePath
 $stateIndex = New-RetryStatusIndex
 $liveRolloutIndex = New-RetryRolloutIndex
 $stateEventsChanged = $true
@@ -36,7 +62,7 @@ function Get-DefaultSettings {
         processName = @('ChatGPT', 'Codex', 'OpenAI.Codex')
         maxRetries = 0; backoffSeconds = @(0); pollSeconds = 0.25
         cooldownSeconds = 20; retryUiWaitSeconds = 90; retryConfirmSeconds = 30
-        uiLeaseSeconds = 5; rescanSeconds = 60; allowNativeClick = $false
+        uiLeaseSeconds = 5; rescanSeconds = 60; allowNativeClick = $true
     }
 }
 
@@ -55,25 +81,57 @@ function Write-Settings($Settings) {
 }
 
 function Write-Control([bool]$Paused) {
-    $parent = Split-Path -Parent $ControlPath
+    $parent = Split-Path -Parent $activeControlPath
     if ($parent -and -not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    [ordered]@{ paused = $Paused; updatedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $ControlPath -Encoding UTF8
+    [ordered]@{ paused = $Paused; updatedAt = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath $activeControlPath -Encoding UTF8
 }
 
 function Get-ControlPaused {
-    if (-not (Test-Path -LiteralPath $ControlPath -PathType Leaf)) { return $false }
-    try { return [bool]((Get-Content -LiteralPath $ControlPath -Raw | ConvertFrom-Json).paused) } catch { return $false }
+    if (-not (Test-Path -LiteralPath $activeControlPath -PathType Leaf)) { return $false }
+    try { return [bool]((Get-Content -LiteralPath $activeControlPath -Raw | ConvertFrom-Json).paused) } catch { return $false }
+}
+
+function Get-RegisteredMonitor {
+    $registration = Read-RetryMonitorRuntime $runtimePath
+    if (-not $registration -or [int]$registration.pid -le 0) { return $null }
+    try {
+        $process = Get-Process -Id ([int]$registration.pid) -ErrorAction Stop
+        if ($process.HasExited) { return $null }
+        return [pscustomobject]@{ Process = $process; Registration = $registration }
+    } catch {
+        return $null
+    }
+}
+
+function Use-MonitorRegistration($Attached) {
+    $registration = $Attached.Registration
+    $script:monitorProcess = $Attached.Process
+    $script:monitorOwned = $false
+    if ($registration.statePath) { $script:activeStatePath = [IO.Path]::GetFullPath([string]$registration.statePath) }
+    if ($registration.controlPath) { $script:activeControlPath = [IO.Path]::GetFullPath([string]$registration.controlPath) }
+    if ($registration.uiDiagnosticPath) { $script:activeUiDiagnosticPath = [IO.Path]::GetFullPath([string]$registration.uiDiagnosticPath) }
+    if ($registration.logRoot) { $script:activeLogRoot = @($registration.logRoot) }
 }
 
 function Test-MonitorAlive {
+    $attached = Get-RegisteredMonitor
+    if ($attached) {
+        if (-not $script:monitorProcess -or $script:monitorProcess.Id -ne $attached.Process.Id) { Use-MonitorRegistration $attached }
+        return $true
+    }
     if ($script:monitorProcess -and -not $script:monitorProcess.HasExited) { return $true }
     $script:monitorProcess = $null
+    $script:monitorOwned = $false
     return $false
 }
 
 function Start-Monitor {
     if (Test-MonitorAlive) { return }
     $settings = Read-Settings
+    $script:activeStatePath = $StatePath
+    $script:activeControlPath = $ControlPath
+    $script:activeUiDiagnosticPath = $UiDiagnosticPath
+    $script:activeLogRoot = @($settings.logRoot)
     Write-Control $false
     $argList = [Collections.Generic.List[string]]::new()
     foreach ($value in @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $monitorScript)) { [void]$argList.Add([string]$value) }
@@ -84,9 +142,10 @@ function Start-Monitor {
         @('-PollSeconds', [string]$settings.pollSeconds), @('-CooldownSeconds', [string]$settings.cooldownSeconds),
         @('-RetryUiWaitSeconds', [string]$settings.retryUiWaitSeconds), @('-RetryConfirmSeconds', [string]$settings.retryConfirmSeconds),
         @('-UiLeaseSeconds', [string]$settings.uiLeaseSeconds), @('-RescanSeconds', [string]$settings.rescanSeconds),
-        @('-StatePath', $StatePath), @('-UiDiagnosticPath', $UiDiagnosticPath), @('-ControlPath', $ControlPath)
+        @('-StatePath', $StatePath), @('-UiDiagnosticPath', $UiDiagnosticPath), @('-ControlPath', $ControlPath), @('-RuntimePath', $runtimePath)
     )) { [void]$argList.Add([string]$pair[0]); [void]$argList.Add([string]$pair[1]) }
     if ([bool]$settings.allowNativeClick) { [void]$argList.Add('-AllowNativeClick') }
+    else { [void]$argList.Add('-DisableNativeClick') }
     $args = @($argList.ToArray())
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = Get-PwshPath
@@ -95,15 +154,20 @@ function Start-Monitor {
     $psi.WorkingDirectory = $scriptRoot
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $script:monitorProcess = [Diagnostics.Process]::Start($psi)
+    $script:monitorOwned = $true
+    Start-Sleep -Milliseconds 100
+    [void](Test-MonitorAlive)
 }
 
-function Stop-Monitor {
-    if (Test-MonitorAlive) { $script:monitorProcess.Kill(); $script:monitorProcess.WaitForExit(3000) | Out-Null }
+function Stop-Monitor([switch]$Force) {
+    $alive = Test-MonitorAlive
+    if ($alive -and ($Force -or $script:monitorOwned)) { $script:monitorProcess.Kill(); $script:monitorProcess.WaitForExit(3000) | Out-Null }
     $script:monitorProcess = $null
+    $script:monitorOwned = $false
 }
 
 function Read-StateEvents {
-    $paths = @($StatePath) + (1..3 | ForEach-Object { "$StatePath.$_" })
+    $paths = @($activeStatePath) + (1..3 | ForEach-Object { "$activeStatePath.$_" })
     $revision = $stateIndex.Stats.Revision
     $events = @(Get-RetryStatusEvents $stateIndex $paths)
     $script:stateEventsChanged = $revision -ne $stateIndex.Stats.Revision
@@ -131,7 +195,8 @@ function Read-EventProperty($Event, [string]$Name) {
 
 function Get-LiveRolloutSessions {
     $settings = Read-Settings
-    return @(Get-RetryLiveRolloutSessions $liveRolloutIndex @($settings.logRoot))
+    $roots = if ($activeLogRoot) { @($activeLogRoot) } else { @($settings.logRoot) }
+    return @(Get-RetryLiveRolloutSessions $liveRolloutIndex $roots)
 }
 
 function Build-StateSessionCache($Events) {
@@ -157,6 +222,7 @@ function Build-StateSessionCache($Events) {
 }
 
 function Get-StatusPayload {
+    $running = Test-MonitorAlive
     $events = @(Read-StateEvents)
     if ($stateEventsChanged -or $null -eq $stateSessionCache) {
         $script:stateSessionCache = @(Build-StateSessionCache $events)
@@ -172,13 +238,53 @@ function Get-StatusPayload {
     $total = [ordered]@{ sessions = $sessions.Count; capacityErrors = 0; attempts = 0; successes = 0; failures = 0 }
     foreach ($session in $sessions) { $total.capacityErrors += $session.capacityErrors; $total.attempts += $session.attempts; $total.successes += $session.successes; $total.failures += $session.failures }
     $last = if ($events.Count) { $events[-1] } else { $null }
-    [ordered]@{ monitor = [ordered]@{ running = (Test-MonitorAlive); paused = (Get-ControlPaused); pid = if ($script:monitorProcess) { $script:monitorProcess.Id } else { $null }; url = "http://127.0.0.1:$Port" }; total = $total; sessions = $sessions; recent = @($events | Select-Object -Last 12 | Sort-Object { [string](Read-EventProperty $_ 'timestamp') } -Descending); history = [ordered]@{ paths = @($StatePath) + (1..3 | ForEach-Object { "$StatePath.$_" }); lastEventAt = if ($last) { Read-EventProperty $last 'timestamp' } else { $null }; note = '统计来自当前状态文件及其轮转副本' } }
+    [ordered]@{ monitor = [ordered]@{ running = $running; paused = (Get-ControlPaused); pid = if ($script:monitorProcess) { $script:monitorProcess.Id } else { $null }; url = "http://127.0.0.1:$Port" }; total = $total; sessions = $sessions; recent = @($events | Select-Object -Last 12 | Sort-Object { [string](Read-EventProperty $_ 'timestamp') } -Descending); history = [ordered]@{ paths = @($activeStatePath) + (1..3 | ForEach-Object { "$activeStatePath.$_" }); lastEventAt = if ($last) { Read-EventProperty $last 'timestamp' } else { $null }; note = '统计来自当前状态文件及其轮转副本' } }
+}
+
+function Test-RetryClientDisconnectException([System.Exception]$Exception) {
+    $current = $Exception
+    while ($current) {
+        $code = ([int]$current.HResult) -band 0xFFFF
+        if ($code -in @(64, 109, 995, 10053, 10054, 10058)) { return $true }
+        $message = [string]$current.Message
+        if ($message -match '(?i)指定的网络名不再可用|network name is no longer available|远程主机强迫关闭|connection (?:was )?(?:aborted|reset)|broken pipe|pipe.*closed|请求被中止|连接.*(?:重置|关闭)') { return $true }
+        $current = $current.InnerException
+    }
+    return $false
 }
 
 function Send-Json($Context, $Value, [int]$StatusCode = 200) {
     $bytes = [Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Depth 12))
     $Context.Response.StatusCode = $StatusCode; $Context.Response.ContentType = 'application/json; charset=utf-8'; $Context.Response.ContentLength64 = $bytes.Length
-    $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length); $Context.Response.Close()
+    try { $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length) }
+    catch { if (-not (Test-RetryClientDisconnectException $_.Exception)) { throw } }
+    finally { try { $Context.Response.Close() } catch { } }
+}
+
+function Send-ProcessEventStream($Context) {
+    $response = $Context.Response
+    $response.StatusCode = 200
+    $response.ContentType = 'text/event-stream; charset=utf-8'
+    $response.SendChunked = $false
+    $response.KeepAlive = $false
+    $response.Headers['Cache-Control'] = 'no-cache, no-transform'
+    $response.Headers['Connection'] = 'close'
+    try {
+        $running = Test-MonitorAlive
+        $paused = if ($running) { Get-ControlPaused } else { $false }
+        $processId = if ($script:monitorProcess) { $script:monitorProcess.Id } else { $null }
+        $payload = [ordered]@{ running = $running; paused = $paused; pid = $processId }
+        $json = $payload | ConvertTo-Json -Compress
+        $text = "retry: 1000`nevent: process`ndata: $json`n`n"
+        $bytes = [Text.Encoding]::UTF8.GetBytes($text)
+        $response.ContentLength64 = $bytes.Length
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+    } catch {
+        if (-not (Test-RetryClientDisconnectException $_.Exception)) { throw }
+        # Browser navigation/reconnect closes the stream normally.
+    } finally {
+        try { $response.Close() } catch { }
+    }
 }
 
 function Read-Body($Context) {
@@ -201,15 +307,16 @@ function Get-Autostart {
 
 function Serve-Request($Context) {
     $path = $Context.Request.Url.AbsolutePath
+    if ($path -eq '/api/process-events' -and $Context.Request.HttpMethod -eq 'GET') { Send-ProcessEventStream $Context; return }
     if ($path -eq '/api/status' -and $Context.Request.HttpMethod -eq 'GET') { Send-Json $Context (Get-StatusPayload); return }
     if ($path -eq '/api/settings' -and $Context.Request.HttpMethod -eq 'GET') { Send-Json $Context ([ordered]@{ settings = Read-Settings; autostart = Get-Autostart }); return }
     if ($path -eq '/api/control' -and $Context.Request.HttpMethod -eq 'POST') {
         $body = Read-Body $Context
-        switch ([string]$body.action) { 'start' { Start-Monitor }; 'resume' { Write-Control $false; if (-not (Test-MonitorAlive)) { Start-Monitor } }; 'pause' { if (Test-MonitorAlive) { Write-Control $true } }; 'restart' { Stop-Monitor; Start-Sleep -Milliseconds 200; Start-Monitor } }
+        switch ([string]$body.action) { 'start' { Start-Monitor }; 'resume' { Write-Control $false; if (-not (Test-MonitorAlive)) { Start-Monitor } }; 'pause' { if (Test-MonitorAlive) { Write-Control $true } }; 'restart' { Stop-Monitor -Force; Start-Sleep -Milliseconds 200; Start-Monitor } }
         Send-Json $Context (Get-StatusPayload); return
     }
     if ($path -eq '/api/settings' -and $Context.Request.HttpMethod -eq 'POST') {
-        $body = Read-Body $Context; if ($body.settings) { Write-Settings $body.settings }; if ($null -ne $body.autostart) { Set-Autostart ([bool]$body.autostart) }; Stop-Monitor; Start-Monitor; Send-Json $Context (Get-StatusPayload); return
+        $body = Read-Body $Context; if ($body.settings) { Write-Settings $body.settings }; if ($null -ne $body.autostart) { Set-Autostart ([bool]$body.autostart) }; Stop-Monitor -Force; Start-Sleep -Milliseconds 200; Start-Monitor; Send-Json $Context (Get-StatusPayload); return
     }
     if ($path -eq '/api/autostart' -and $Context.Request.HttpMethod -eq 'POST') { $body = Read-Body $Context; Set-Autostart ([bool]$body.enabled); Send-Json $Context ([ordered]@{ enabled = Get-Autostart }); return }
     $relative = if ($path -eq '/') { 'index.html' } else { $path.TrimStart('/') }
@@ -217,7 +324,12 @@ function Serve-Request($Context) {
     $file = [IO.Path]::GetFullPath((Join-Path $webRoot $relative))
     if (-not $file.StartsWith($webRootFull, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $file -PathType Leaf)) { Send-Json $Context @{ error = 'Not found' } 404; return }
     $contentTypes = @{ '.html' = 'text/html; charset=utf-8'; '.css' = 'text/css; charset=utf-8'; '.js' = 'text/javascript; charset=utf-8'; '.svg' = 'image/svg+xml' }
-    $bytes = [IO.File]::ReadAllBytes($file); $Context.Response.ContentType = if ($contentTypes.ContainsKey([IO.Path]::GetExtension($file))) { $contentTypes[[IO.Path]::GetExtension($file)] } else { 'application/octet-stream' }; $Context.Response.ContentLength64 = $bytes.Length; $Context.Response.OutputStream.Write($bytes,0,$bytes.Length); $Context.Response.Close()
+    $bytes = [IO.File]::ReadAllBytes($file)
+    $Context.Response.ContentType = if ($contentTypes.ContainsKey([IO.Path]::GetExtension($file))) { $contentTypes[[IO.Path]::GetExtension($file)] } else { 'application/octet-stream' }
+    $Context.Response.ContentLength64 = $bytes.Length
+    try { $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length) }
+    catch { if (-not (Test-RetryClientDisconnectException $_.Exception)) { throw } }
+    finally { try { $Context.Response.Close() } catch { } }
 }
 
 if ($Port -lt 1024 -or $Port -gt 65535) { throw 'Port must be between 1024 and 65535.' }
@@ -230,5 +342,15 @@ try {
     $url = "http://127.0.0.1:$Port/"
     Write-Host "Retry console running at $url" -ForegroundColor Cyan
     if (-not $NoBrowser) { Start-Process $url }
-    while ($listener.IsListening) { try { Serve-Request ($listener.GetContext()) } catch { Write-Warning $_.Exception.Message } }
+    [void]$listener.BeginGetContext([AsyncCallback][RetryHttpAccept]::Accept, $listener)
+    while ($listener.IsListening) {
+        $context = $null
+        while ([RetryHttpAccept]::Queue.TryDequeue([ref]$context)) {
+            try { Serve-Request $context } catch {
+                if ($listener.IsListening -and -not (Test-RetryClientDisconnectException $_.Exception)) { Write-Warning $_.Exception.Message }
+                try { $context.Response.Close() } catch { }
+            }
+        }
+        Start-Sleep -Milliseconds 50
+    }
 } finally { try { if ($listener.IsListening) { $listener.Stop() } } catch { }; Stop-RetryRolloutWatchers $liveRolloutIndex; Stop-Monitor }
